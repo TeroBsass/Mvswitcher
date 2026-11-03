@@ -44,12 +44,12 @@ class MigrationEngineTest {
                 }
                 """);
         Files.writeString(source.resolve("PlayerDetectorRailBlock.java"), """
-                class PlayerDetectorRailBlock extends BaseRailBlock {
+                public class PlayerDetectorRailBlock extends BaseRailBlock {
                     @Override protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) { return 15; }
                 }
                 """);
         Files.writeString(source.resolve("RailCreatorBlock.java"), """
-                class RailCreatorBlock extends BaseEntityBlock {
+                public class RailCreatorBlock extends BaseEntityBlock {
                     @Override public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,
                         @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity, @NonNull ItemStack stack) {
                         if (blockEntity instanceof RailCreatorEntity entity) { entity.dropInputs(level); }
