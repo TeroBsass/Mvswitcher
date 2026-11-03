@@ -22,7 +22,7 @@ final class NeoForgeApiPatcher {
     private static void patchForward(Path root, MigrationReport report) throws IOException {
         try (var paths = Files.walk(root)) {
             for (Path file : paths.filter(p -> p.toString().endsWith(".java")).toList()) {
-                String relative = root.relativize(file).toString().replace('\\\\', '/');
+                String relative = root.relativize(file).toString().replace(File.separatorChar, '/');
                 String before = Files.readString(file);
                 String after = before;
 
