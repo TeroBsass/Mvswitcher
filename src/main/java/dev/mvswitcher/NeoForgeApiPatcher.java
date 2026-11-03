@@ -1,5 +1,6 @@
 package dev.mvswitcher;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
@@ -40,7 +41,7 @@ final class NeoForgeApiPatcher {
                             .replace("extractLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)",
                                     "renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)")
                             .replace("super(menu, inventory, title, 176, 166);",
-                                    "super(menu, inventory, title);\\n        this.imageWidth = 176;\\n        this.imageHeight = 166;");
+                                    "super(menu, inventory, title);\n        this.imageWidth = 176;\n        this.imageHeight = 166;");
                 }
 
                 if (relative.endsWith("/PlayerDetectorRailBlock.java") || relative.equals("PlayerDetectorRailBlock.java")) {
@@ -48,21 +49,21 @@ final class NeoForgeApiPatcher {
                                     "protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) {");
                     if (!after.contains("MapCodec<PlayerDetectorRailBlock>")) {
                         after = after.replace("public class PlayerDetectorRailBlock extends BaseRailBlock {",
-                                "public class PlayerDetectorRailBlock extends BaseRailBlock {\\n" +
-                                "    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);\\n" +
+                                "public class PlayerDetectorRailBlock extends BaseRailBlock {\n" +
+                                "    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);\n" +
                                 "    @Override protected com.mojang.serialization.MapCodec<? extends BaseRailBlock> codec() { return CODEC; }");
                     }
                 }
 
                 if (relative.endsWith("/RailCreatorBlock.java") || relative.equals("RailCreatorBlock.java")) {
                     after = after.replace("public class RailCreatorBlock extends BaseEntityBlock {",
-                            "public class RailCreatorBlock extends BaseEntityBlock {\\n" +
-                            "    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);\\n" +
+                            "public class RailCreatorBlock extends BaseEntityBlock {\n" +
+                            "    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);\n" +
                             "    @Override protected com.mojang.serialization.MapCodec<? extends BaseEntityBlock> codec() { return CODEC; }");
                     after = after.replace("public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,",
                                     "public void playerDestroy(@NonNull Level level, @NonNull Player player,")
-                            .replace("if (blockEntity instanceof RailCreatorEntity entity) {\\n            entity.dropInputs(level);",
-                                    "if (level instanceof ServerLevel serverLevel && blockEntity instanceof RailCreatorEntity entity) {\\n            entity.dropInputs(serverLevel);");
+                            .replace("if (blockEntity instanceof RailCreatorEntity entity) {\n            entity.dropInputs(level);",
+                                    "if (level instanceof ServerLevel serverLevel && blockEntity instanceof RailCreatorEntity entity) {\n            entity.dropInputs(serverLevel);");
                 }
 
                 if (relative.endsWith("/RailCreatorEntity.java") || relative.equals("RailCreatorEntity.java")) {
