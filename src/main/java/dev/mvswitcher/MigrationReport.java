@@ -24,6 +24,7 @@ public class MigrationReport {
                 "\nChanged (" + changed.size() + "):\n" + lines(changed) +
                 "\nWarnings (" + warnings.size() + "):\n" + lines(warnings) +
                 "\nErrors (" + errors.size() + "):\n" + lines(errors) +
+                "\nGradle build: " + buildStatus + "\n" + lines(buildOutput) +
                 "\nNote: source project is never modified. A successful Gradle build is not guaranteed by source rewriting alone.\n";
     }
     private String lines(List<String> list) { return list.isEmpty() ? "  none\n" : list.stream().map(s -> "  - " + s + "\n").reduce("", String::concat); }
