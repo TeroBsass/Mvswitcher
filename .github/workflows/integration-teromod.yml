@@ -3,6 +3,10 @@ on:
   push:
     paths:
       - .github/workflows/integration-teromod.yml
+      - src/**
+      - build.gradle
+      - gradle.properties
+      - gradle/wrapper/**
   workflow_dispatch:
 
 jobs:
