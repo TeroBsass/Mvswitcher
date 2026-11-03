@@ -44,11 +44,12 @@ public class MVSwitcher implements Runnable {
         @Option(names = {"--rules"}, description = "Custom JSON rule pack.") Path rules;
         @Option(names = {"--dry-run"}, description = "Analyze and plan without writing files.") boolean dryRun;
         @Option(names = {"--force"}, description = "Allow an existing output directory to be replaced.") boolean force;
+        @Option(names = {"--skip-build"}, description = "Do not run the target Gradle build after migration.") boolean skipBuild;
 
         public Integer call() {
             try {
                 MigrationOptions options = new MigrationOptions(input, from, to, neoForgeVersion,
-                        javaVersion, output, rules, dryRun, force);
+                        javaVersion, output, rules, dryRun, force, skipBuild);
                 MigrationReport report = MigrationEngine.migrate(options);
                 System.out.println(report.toText());
                 return report.hasErrors() ? 1 : 0;
