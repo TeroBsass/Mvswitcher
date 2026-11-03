@@ -26,6 +26,7 @@ jobs:
           build/install/mvswitcher/bin/mvswitcher analyze sample/Teromod
           build/install/mvswitcher/bin/mvswitcher migrate sample/Teromod --from 26.3 --to 1.21.11 --skip-build --output integration/TeroMod-1.21.11
       - name: Try compiling migrated TeroMod
+        id: target_build
         continue-on-error: true
         run: |
           cd integration/TeroMod-1.21.11
@@ -37,5 +38,14 @@ jobs:
         with:
           name: teromod-migration-diagnostics
           path: |
-            integration/
+            integration/TeroMod-1.21.11/src/**
+            integration/TeroMod-1.21.11/gradle.properties
+            integration/TeroMod-1.21.11/build.gradle
+            integration/TeroMod-1.21.11/settings.gradle
+            integration/target-build.log
           if-no-files-found: warn
+      - name: Fail workflow if migrated mod does not compile
+        if: steps.target_build.outcome == 'failure'
+        run: |
+          echo "The migrated TeroMod did not compile. See the uploaded target-build.log artifact."
+          exit 1
