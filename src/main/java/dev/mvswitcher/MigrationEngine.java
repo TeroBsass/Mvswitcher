@@ -22,9 +22,14 @@ public final class MigrationEngine {
         if (neo == null) throw new IOException("Unknown target profile. Supply --neoforge-version explicitly.");
         MigrationReport report = new MigrationReport();
         report.versions(from, o.to());
+        Path sourceArgument = o.input().toAbsolutePath().normalize();
+        Path outputParent = Files.isRegularFile(sourceArgument) ? sourceArgument.getParent() : info.root().getParent();
         Path out = o.output() == null
-                ? info.root().resolveSibling("converted").resolve(info.projectName() + "-" + safe(o.to()))
+                ? outputParent.resolve("converted").resolve(info.projectName() + "-" + safe(o.to()))
                 : o.output().toAbsolutePath().normalize();
+        if (out.startsWith(info.root()) || info.root().startsWith(out)) {
+            throw new IOException("Output must be outside the source project directory.");
+        }
         if (o.dryRun()) {
             report.warning("Dry run: no files were written.");
             report.warning("Version profile: Minecraft " + o.to() + ", NeoForge " + neo + ", Java " + java);
