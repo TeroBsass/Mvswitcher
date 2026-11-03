@@ -1,7 +1,15 @@
 {
   "rules": [
     {
-      "id": "identifier-to-resource-location-1.21.11",
+      "id": "identifier-type-to-resource-location-1.21.11",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "find": "net.minecraft.resources.Identifier",
+      "replace": "net.minecraft.resources.ResourceLocation"
+    },
+    {
+      "id": "identifier-type-to-resource-location-simple-name-1.21.11",
       "from": "26.3",
       "to": "1.21.11",
       "includes": ["**/*.java"],
@@ -9,7 +17,15 @@
       "replace": "ResourceLocation"
     },
     {
-      "id": "resource-location-to-identifier-26.3",
+      "id": "resource-location-to-identifier-qualified-26.3",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "find": "net.minecraft.resources.ResourceLocation",
+      "replace": "net.minecraft.resources.Identifier"
+    },
+    {
+      "id": "resource-location-to-identifier-simple-name-26.3",
       "from": "1.21.11",
       "to": "26.3",
       "includes": ["**/*.java"],
