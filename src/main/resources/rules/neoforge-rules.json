@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "id": "identifier-to-resource-location-1.21.11",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "find": "Identifier",
+      "replace": "ResourceLocation"
+    },
+    {
+      "id": "resource-location-to-identifier-26.3",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "find": "ResourceLocation",
+      "replace": "Identifier"
+    }
+  ]
+}
