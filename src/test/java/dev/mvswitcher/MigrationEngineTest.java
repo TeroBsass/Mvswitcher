@@ -52,7 +52,9 @@ class MigrationEngineTest {
                 public class RailCreatorBlock extends BaseEntityBlock {
                     @Override public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,
                         @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity, @NonNull ItemStack stack) {
-                        if (blockEntity instanceof RailCreatorEntity entity) { entity.dropInputs(level); }
+                        if (blockEntity instanceof RailCreatorEntity entity) {
+                            entity.dropInputs(level);
+                        }
                     }
                 }
                 """);
