@@ -2,7 +2,7 @@
 
 **MVSwitcher** is a Java 21 command-line tool for migrating Minecraft mod projects between Minecraft versions on **NeoForge only**.
 
-It is designed for bidirectional migrations. The migration engine is rule-driven: version/API transformations are explicit, reversible where a reverse rule exists, and can be extended without changing the CLI.
+It is designed for bidirectional migrations. The migration engine is rule-driven and can route through multiple intermediate versions when the rule pack contains a connected path. Version/API transformations are explicit, reversible where reverse edges exist, and can be extended without changing the CLI.
 
 ## Requirements
 - Java 21
@@ -31,6 +31,7 @@ mvswitcher analyze ./MyMod
 mvswitcher versions
 mvswitcher migrate ./MyMod --to 1.21.11
 mvswitcher migrate ./MyMod.zip --from 26.3 --to 1.21.11 --dry-run
+mvswitcher migrate ./MyMod --from 26.3 --to 1.21.11 --skip-build
 mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --neoforge-version 26.3.0.99 --java 25
 ```
 
@@ -62,5 +63,7 @@ Rules are exact version-edge transformations. Add a reverse rule to support the 
 - NeoForge projects only; Forge and Fabric are rejected.
 - Source files and resources are copied before transformations.
 - Java sources are parsed for syntax diagnostics after rewriting.
+- The target Gradle build is run automatically by default; use `--skip-build` to disable it.
 - The tool updates common version properties, but does not invent API replacements or guarantee a successful build.
+- Multi-hop migrations are possible when the rule database contains a connected sequence of version edges.
 - A complete migration requires version-specific API rules and validation against the target NeoForge toolchain. The project is built to grow through tested rule packs.
