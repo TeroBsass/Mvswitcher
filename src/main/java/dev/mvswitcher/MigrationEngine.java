@@ -71,21 +71,55 @@ public final class MigrationEngine {
         }
     }
     private static void applyRules(Path root, String from, String to, RulePack pack, MigrationReport report) throws IOException {
-        for (MigrationRule rule : pack.rules) {
-            if (!rule.from.equals(from) || !rule.to.equals(to)) continue;
-            try (var paths = Files.walk(root)) {
-                for (Path file : paths.filter(Files::isRegularFile).toList()) {
-                    String rel = root.relativize(file).toString().replace('\\', '/');
-                    if (!matches(rule.includes, rel)) continue;
-                    String before = Files.readString(file);
-                    String after = before.replace(rule.find, rule.replace);
-                    if (!before.equals(after)) {
-                        Files.writeString(file, after);
-                        report.changed(rel + " (" + rule.id + ")");
+        List<MigrationRule> route = findRoute(pack.rules, from, to);
+        if (!from.equals(to) && route.isEmpty()) {
+            report.warning("No migration-rule path is defined from " + from + " to " + to + ". Only build metadata will be updated.");
+            return;
+        }
+        for (MigrationRule edge : route) {
+            for (MigrationRule rule : pack.rules) {
+                if (!Objects.equals(rule.from, edge.from) || !Objects.equals(rule.to, edge.to)) continue;
+                if (rule.find == null || rule.replace == null) {
+                    report.warning("Skipped incomplete rule: " + rule.id);
+                    continue;
+                }
+                try (var paths = Files.walk(root)) {
+                    for (Path file : paths.filter(Files::isRegularFile).toList()) {
+                        String rel = root.relativize(file).toString().replace('\\', '/');
+                        if (!matches(rule.includes, rel)) continue;
+                        String before = Files.readString(file);
+                        String after = before.replace(rule.find, rule.replace);
+                        if (!before.equals(after)) {
+                            Files.writeString(file, after);
+                            report.changed(rel + " (" + rule.id + ")");
+                        }
                     }
                 }
             }
         }
+        if (!route.isEmpty()) report.warning("Applied migration route: " +
+                route.get(0).from + " -> " + route.stream().map(r -> r.to).reduce((a, b) -> b).orElse(to));
+    }
+
+    private static List<MigrationRule> findRoute(List<MigrationRule> rules, String from, String to) {
+        if (Objects.equals(from, to)) return List.of();
+        record Step(String version, List<MigrationRule> path) {}
+        Queue<Step> queue = new ArrayDeque<>();
+        Set<String> visited = new HashSet<>();
+        queue.add(new Step(from, List.of()));
+        visited.add(from);
+        while (!queue.isEmpty()) {
+            Step current = queue.remove();
+            for (MigrationRule edge : rules) {
+                if (!Objects.equals(edge.from, current.version) || edge.to == null || visited.contains(edge.to)) continue;
+                List<MigrationRule> path = new ArrayList<>(current.path);
+                path.add(edge);
+                if (edge.to.equals(to)) return path;
+                visited.add(edge.to);
+                queue.add(new Step(edge.to, path));
+            }
+        }
+        return List.of();
     }
     private static boolean matches(List<String> patterns, String path) {
         if (patterns == null || patterns.isEmpty()) return true;
