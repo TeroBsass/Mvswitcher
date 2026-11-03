@@ -45,6 +45,7 @@ public final class MigrationEngine {
         report.output(out);
         RulePack pack = loadRules(o.rules());
         applyRules(out, from, o.to(), pack, report);
+        NeoForgeApiPatcher.apply(out, from, o.to(), report);
         updateBuildFiles(out, o.to(), neo, java, report);
         validateJava(out, report);
         if (o.skipBuild()) {
@@ -73,7 +74,7 @@ public final class MigrationEngine {
     private static void applyRules(Path root, String from, String to, RulePack pack, MigrationReport report) throws IOException {
         List<MigrationRule> route = findRoute(pack.rules, from, to);
         if (!from.equals(to) && route.isEmpty()) {
-            report.warning("No migration-rule path is defined from " + from + " to " + to + ". Only build metadata will be updated.");
+            report.warning("No generic text-rule path is defined from " + from + " to " + to + ". Version-specific API patches may still be applied.");
             return;
         }
         for (MigrationRule edge : route) {
