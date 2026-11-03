@@ -18,6 +18,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build and test
         run: gradle clean test installDist
+      - name: CLI smoke test
+        run: |
+          build/install/mvswitcher/bin/mvswitcher --help
+          build/install/mvswitcher/bin/mvswitcher versions
       - name: Upload CLI distribution
         uses: actions/upload-artifact@v4
         with:
