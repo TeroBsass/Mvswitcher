@@ -78,7 +78,26 @@ public final class MigrationEngine {
     }
     private static boolean matches(List<String> patterns, String path) {
         if (patterns == null || patterns.isEmpty()) return true;
-        return patterns.stream().anyMatch(p -> path.matches(p.replace(".", "\\.").replace("**", ".*").replace("*", "[^/]*")));
+        return patterns.stream().anyMatch(p -> path.matches(globRegex(p)));
+    }
+    private static String globRegex(String glob) {
+        StringBuilder out = new StringBuilder("^");
+        for (int i = 0; i < glob.length(); i++) {
+            char c = glob.charAt(i);
+            if (c == '*' && i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                i++;
+                if (i + 1 < glob.length() && glob.charAt(i + 1) == '/') {
+                    i++;
+                    out.append("(?:.*/)?");
+                } else out.append(".*");
+            } else if (c == '*') out.append("[^/]*");
+            else if (c == '?') out.append("[^/]");
+            else {
+                if ("\\.[]{}()+-^$|".indexOf(c) >= 0) out.append('\\\\');
+                out.append(c);
+            }
+        }
+        return out.append("$").toString();
     }
     private static void updateBuildFiles(Path root, String mc, String neo, int java, MigrationReport report) throws IOException {
         Path props = root.resolve("gradle.properties");
