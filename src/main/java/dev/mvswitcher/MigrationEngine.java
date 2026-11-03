@@ -101,7 +101,7 @@ public final class MigrationEngine {
                 route.get(0).from + " -> " + route.stream().map(r -> r.to).reduce((a, b) -> b).orElse(to));
     }
 
-    private static List<MigrationRule> findRoute(List<MigrationRule> rules, String from, String to) {
+    static List<MigrationRule> findRoute(List<MigrationRule> rules, String from, String to) {
         if (Objects.equals(from, to)) return List.of();
         record Step(String version, List<MigrationRule> path) {}
         Queue<Step> queue = new ArrayDeque<>();
