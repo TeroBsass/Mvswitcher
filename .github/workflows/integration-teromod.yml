@@ -36,6 +36,9 @@ jobs:
           cd integration/TeroMod-1.21.11
           chmod +x gradlew
           ./gradlew build --no-daemon 2>&1 | tee ../../integration/target-build.log
+          jar_file="$(find build/libs -maxdepth 1 -type f -name '*.jar' ! -name '*sources*' | head -n 1)"
+          test -n "$jar_file"
+          cp "$jar_file" ../../integration/TeroMod-1.21.11.jar
       - name: Upload migration and compiler diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -47,6 +50,7 @@ jobs:
             integration/TeroMod-1.21.11/build.gradle
             integration/TeroMod-1.21.11/settings.gradle
             integration/target-build.log
+            integration/TeroMod-1.21.11.jar
           if-no-files-found: warn
       - name: Fail workflow if migrated mod does not compile
         if: steps.target_build.outcome == 'failure'
