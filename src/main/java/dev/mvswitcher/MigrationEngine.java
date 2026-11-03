@@ -42,7 +42,13 @@ public final class MigrationEngine {
         applyRules(out, from, o.to(), pack, report);
         updateBuildFiles(out, o.to(), neo, java, report);
         validateJava(out, report);
-        report.warning("Run the generated project's Gradle build and inspect all warnings; unknown API changes require manual migration rules.");
+        if (o.skipBuild()) {
+            report.warning("Gradle build skipped by --skip-build.");
+        } else {
+            BuildRunner.Result build = BuildRunner.run(out);
+            report.build(build.success() ? "SUCCESS" : build.started() ? "FAILED" : "NOT RUN", build.output());
+            if (!build.success()) report.warning("Target build did not pass. Review the Gradle output and unresolved API changes.");
+        }
         return report;
     }
     private static String safe(String v) { return v.replaceAll("[^A-Za-z0-9._-]", "_"); }
