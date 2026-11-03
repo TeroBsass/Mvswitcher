@@ -17,7 +17,6 @@ public final class ProjectAnalyzer {
         String neo = first(gradle, "(?m)^\\s*neo_version\\s*=\\s*['\\\"]?([^'\\\"\\s]+)");
         if (neo == null) neo = first(gradle, "(?i)neoforge\\s*[:=]\\s*['\\\"]([0-9][^'\\\"]*)");
         String loader = Files.exists(root.resolve("src/main/resources/META-INF/neoforge.mods.toml")) ||
-                Files.exists(root.resolve("src/main/resources/META-INF/mods.toml")) ||
                 gradle.toLowerCase(Locale.ROOT).contains("neoforge") ? "NeoForge" : "unknown";
         int java = 0;
         String j = first(gradle, "(?i)(?:JavaLanguageVersion\\.of\\(|java_version\\s*=\\s*)['\\\"]?(\\d+)");
