@@ -155,7 +155,47 @@ public final class MigrationEngine {
             Files.writeString(props, s);
             report.changed("gradle.properties (target versions)");
         } else report.warning("gradle.properties not found; target versions were not written there.");
+        updateMinecraftVersionRanges(root, mc, report);
     }
+
+    /**
+     * Keep NeoForge's Minecraft compatibility range in sync with the selected
+     * target version. MDKs may place this property in settings.gradle,
+     * gradle.properties, or another Gradle/TOML configuration file.
+     */
+    private static void updateMinecraftVersionRanges(Path root, String mc, MigrationReport report) throws IOException {
+        Pattern range = Pattern.compile("(?m)^(\\s*minecraft_version_range\\s*=\\s*)([\\\"']?)\\[[^]\\r\\n]*\\]\\2(\\s*(?:#.*)?)$");
+        List<String> configNames = List.of(
+                "gradle.properties", "settings.gradle", "settings.gradle.kts",
+                "build.gradle", "build.gradle.kts", "neoforge.mods.toml", "mods.toml"
+        );
+        try (var paths = Files.walk(root)) {
+            for (Path file : paths.filter(Files::isRegularFile)
+                    .filter(p -> configNames.contains(p.getFileName().toString()))
+                    .toList()) {
+                String before = Files.readString(file);
+                Matcher matcher = range.matcher(before);
+                StringBuffer updated = new StringBuffer();
+                boolean found = false;
+                while (matcher.find()) {
+                    found = true;
+                    String replacement = matcher.group(1) + matcher.group(2) + "[" + mc + "]"
+                            + matcher.group(2) + matcher.group(3);
+                    matcher.appendReplacement(updated, Matcher.quoteReplacement(replacement));
+                }
+                if (found) {
+                    matcher.appendTail(updated);
+                    String after = updated.toString();
+                    if (!before.equals(after)) {
+                        Files.writeString(file, after);
+                        report.changed(root.relativize(file).toString().replace('\\\\', '/') +
+                                " (minecraft_version_range -> [" + mc + "])");
+                    }
+                }
+            }
+        }
+    }
+
     private static String setProperty(String source, String key, String value) {
         Pattern p = Pattern.compile("(?m)^\\s*" + Pattern.quote(key) + "\\s*=.*$");
         if (p.matcher(source).find()) return p.matcher(source).replaceAll(Matcher.quoteReplacement(key + "=" + value));
