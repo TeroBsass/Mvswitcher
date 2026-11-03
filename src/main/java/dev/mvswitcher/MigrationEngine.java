@@ -99,7 +99,7 @@ public final class MigrationEngine {
             } else if (c == '*') out.append("[^/]*");
             else if (c == '?') out.append("[^/]");
             else {
-                if ("\\.[]{}()+-^$|".indexOf(c) >= 0) out.append('\\\\');
+                if ("\\.[]{}()+-^$|".indexOf(c) >= 0) out.append('\\');
                 out.append(c);
             }
         }
