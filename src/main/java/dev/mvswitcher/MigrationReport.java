@@ -9,11 +9,14 @@ public class MigrationReport {
     private final List<String> errors = new ArrayList<>();
     private Path output;
     private String from, to;
+    private String buildStatus = "not run";
+    private final List<String> buildOutput = new ArrayList<>();
     public void changed(String s) { changed.add(s); }
     public void warning(String s) { warnings.add(s); }
     public void error(String s) { errors.add(s); }
     public void output(Path p) { output = p; }
     public void versions(String f, String t) { from = f; to = t; }
+    public void build(String status, List<String> output) { buildStatus = status; buildOutput.addAll(output); }
     public boolean hasErrors() { return !errors.isEmpty(); }
     public String toText() {
         return "MVSwitcher migration report\nFrom: " + from + "\nTo: " + to +
