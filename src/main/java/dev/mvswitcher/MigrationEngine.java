@@ -164,7 +164,7 @@ public final class MigrationEngine {
      * gradle.properties, or another Gradle/TOML configuration file.
      */
     private static void updateMinecraftVersionRanges(Path root, String mc, MigrationReport report) throws IOException {
-        Pattern range = Pattern.compile("(?m)^(\\s*minecraft_version_range\\s*=\\s*)([\\\"']?)\\[[^]\\r\\n]*\\]\\2(\\s*(?:#.*)?)$");
+        Pattern range = Pattern.compile("(?m)^(\\s*minecraft_version_range\\s*=\\s*)([\"']?)\\[[^\\r\\n]*\\]\\2(\\s*(?:#.*)?)$");
         List<String> configNames = List.of(
                 "gradle.properties", "settings.gradle", "settings.gradle.kts",
                 "build.gradle", "build.gradle.kts", "neoforge.mods.toml", "mods.toml"
@@ -188,7 +188,7 @@ public final class MigrationEngine {
                     String after = updated.toString();
                     if (!before.equals(after)) {
                         Files.writeString(file, after);
-                        report.changed(root.relativize(file).toString().replace('\\\\', '/') +
+                        report.changed(root.relativize(file).toString().replace('\\', '/') +
                                 " (minecraft_version_range -> [" + mc + "])");
                     }
                 }
