@@ -14,6 +14,7 @@ class MigrationEngineTest {
         Path java = source.resolve("src/main/java/example");
         Files.createDirectories(metadata);
         Files.createDirectories(java);
+        Files.writeString(source.resolve("settings.gradle"), "minecraft_version_range=[26.3]\n");
         Files.writeString(source.resolve("gradle.properties"),
                 "minecraft_version=26.3\\nneo_version=26.3.0.99\\n");
         Files.writeString(source.resolve("build.gradle"),
@@ -30,6 +31,7 @@ class MigrationEngineTest {
         assertEquals(original, Files.readString(java.resolve("Example.java")));
         assertTrue(Files.readString(output.resolve("src/main/java/example/Example.java")).contains("Identifier"));
         assertTrue(Files.readString(output.resolve("gradle.properties")).contains("minecraft_version=1.21.11"));
+        assertTrue(Files.readString(output.resolve("settings.gradle")).contains("minecraft_version_range=[1.21.11]"));
     }
 
     @Test void appliesKnownNeoForgeApiPatches() throws Exception {

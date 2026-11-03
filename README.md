@@ -64,7 +64,7 @@ Rules are exact version-edge transformations. Add a reverse rule to support the 
 - Source files and resources are copied before transformations.
 - Java sources are parsed for syntax diagnostics after rewriting.
 - The target Gradle build is run automatically by default; use `--skip-build` to disable it.
-- The tool updates common version properties and applies a small, version-specific set of tested NeoForge API patches.
+- The tool updates common version properties, synchronizes existing `minecraft_version_range` entries in Gradle and NeoForge TOML configuration files with the target Minecraft version, and applies a small, version-specific set of tested NeoForge API patches.
 - A successful TeroMod compile validates the 26.3 -> 1.21.11 path only; runtime behavior in Minecraft still needs in-game testing.
 - Reverse semantic patches and broader version coverage are still in development.
 - Multi-hop migrations are possible when the rule database contains a connected sequence of version edges.
