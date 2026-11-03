@@ -47,7 +47,7 @@ public final class MigrationEngine {
         } else {
             BuildRunner.Result build = BuildRunner.run(out);
             report.build(build.success() ? "SUCCESS" : build.started() ? "FAILED" : "NOT RUN", build.output());
-            if (!build.success()) report.warning("Target build did not pass. Review the Gradle output and unresolved API changes.");
+            if (!build.success()) report.error("Target Gradle build did not pass. Review the build output and unresolved API changes.");
         }
         return report;
     }
