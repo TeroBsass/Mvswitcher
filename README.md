@@ -1,52 +1,87 @@
 # MVSwitcher
 
-**MVSwitcher** is a Java 21 command-line tool for migrating Minecraft mod projects between Minecraft versions on **NeoForge only**.
+MVSwitcher — консольный инструмент для переноса Minecraft-модов на NeoForge между версиями Minecraft. Он не меняет исходный проект: результат создаётся в отдельном каталоге `converted/` или по пути `--output`.
 
-It is designed for bidirectional migrations. The migration engine is rule-driven and can route through multiple intermediate versions when the rule pack contains a connected path. Version/API transformations are explicit, reversible where reverse edges exist, and can be extended without changing the CLI.
+## Требования и сборка
 
-## Requirements
-- Java 21
-- Gradle 8.10+ (the GitHub Actions build uses the Gradle setup action)
+- JDK 21 (для сборки самого MVSwitcher).
+- Gradle 8.10 или новее.
+- Для профиля NeoForge 26.3 также нужен JDK 25; для 1.21.11 — JDK 21.
 
-## Build
-```bash
+```shell
 gradle clean test installDist
 ```
 
-The executable distribution is created in `build/install/mvswitcher/`.
+Запуск:
 
-Linux/macOS:
-```bash
-./build/install/mvswitcher/bin/mvswitcher --help
+```shell
+build/install/mvswitcher/bin/mvswitcher --help
+build/install/mvswitcher/bin/mvswitcher versions
 ```
 
-Windows:
-```bat
-build\install\mvswitcher\bin\mvswitcher.bat --help
+В Windows используйте `build\install\mvswitcher\bin\mvswitcher.bat`.
+
+## Направление и покрытие правил
+
+Направление всегда задаётся как **исходная версия → целевая версия**. В репозитории подтверждён перенос **26.3 → 1.21.11**: его запускает интеграционный workflow проекта, а относящиеся к нему проверенные на примерах преобразования находятся в `src/main/resources/rules/26.3/1.21.11/rules.json`.
+
+Это не означает, что любое приложение автоматически перенесётся без ручной работы: правила отражают известные проекту изменения API, а итоговая сборка проверяет совместимость конкретного проекта. Для **1.21.11 → 26.3** обратных API-правил пока нет. Каталог `1.21.11/26.3` будет означать именно это направление, а не обратное; профиль целевой версии сам по себе не означает наличие миграционных правил. Для прочих версий в проекте нет проверенных профилей и наборов преобразований: передавайте параметры NeoForge/Java и добавляйте собственные направленные правила.
+
+Команда `mvswitcher versions` выводит известные профили и имеющиеся в комплекте направленные рёбра. Маршрут из нескольких версий выбирается автоматически только тогда, когда для каждого ребра существует набор правил. Отсутствие маршрута отображается в отчёте; API-совместимость в этом случае не заявляется.
+
+## Получение шаблона и этапы переноса
+
+Для режима с шаблоном сначала получите NeoForge MDK для **целевой** версии — например, через официальный [генератор модов NeoForge](https://neoforged.net/mod-generator/) — и распакуйте ZIP. Выбирайте Minecraft/Gradle-настройки целевой версии. Шаблон можно передать как каталог или ZIP-файл.
+
+```shell
+mvswitcher migrate ./MyMod --from 26.3 --to 1.21.11 --template ./NeoForge-MDK
 ```
 
-## Commands
-```bash
+В этом режиме конвейер работает в таком порядке:
+
+1. Проверяет исходный мод и целевой NeoForge MDK, включая доступные сведения о версиях.
+2. Копирует MDK в выходной каталог и подставляет целевые `minecraft_version`, `neo_version`, `java_version` и существующий `minecraft_version_range`.
+3. Собирает чистый MDK. Если эта сборка не проходит, исходные файлы ещё не переносятся, а причина попадает в отчёт.
+4. Переносит содержимое исходного проекта поверх шаблона: заменяет примерный `src/`, копирует остальные файлы проекта, кроме Gradle-сборки/обёртки шаблона. `gradle.properties` объединяется: свойства шаблона сохраняются, недостающие добавляются из источника, а значения `mod_*` берутся из исходного проекта. Затем версии Minecraft/NeoForge/Java снова выставляются на целевые.
+5. Находит направленный маршрут правил и применяет преобразования в порядке правил каждого ребра.
+6. Проверяет синтаксис Java, запускает итоговую сборку и печатает отчёт с изменёнными файлами, количеством срабатываний каждого правила, предупреждениями и выводом обеих сборок.
+
+`--skip-build` пропускает обе сборки (шаблона и результата); он не меняет порядок остальных шагов. Если `--template` не задан, остаётся совместимый прежний режим: исходный проект копируется целиком, затем обновляются известные build-метаданные, применяются правила и запускается итоговая сборка. Этот режим не создаёт новый MDK.
+
+При использовании MDK его `build.gradle`/`settings.gradle`, wrapper и каталог `gradle/` остаются целевыми и не заменяются одноимёнными файлами исходного проекта. Если исходный мод требует особых зависимостей или настроек сборки, перенесите их в целевую конфигурацию и проверьте итоговую сборку; для простых изменений применяйте направленные правила с glob по файлам сборки.
+
+Примеры:
+
+```shell
 mvswitcher analyze ./MyMod
-mvswitcher versions
-mvswitcher migrate ./MyMod --to 1.21.11
-mvswitcher migrate ./MyMod.zip --from 26.3 --to 1.21.11 --dry-run
-mvswitcher migrate ./MyMod --from 26.3 --to 1.21.11 --skip-build
+mvswitcher migrate ./MyMod.zip --from 26.3 --to 1.21.11 --template ./NeoForge-MDK.zip --dry-run
+mvswitcher migrate ./MyMod --from 26.3 --to 1.21.11 --template ./NeoForge-MDK --skip-build
 mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --neoforge-version 26.3.0.99 --java 25
 ```
 
-By default, output is written next to the source under `converted/<project>-<target>/`. The input project is never edited. Existing output directories are protected unless `--force` is supplied.
+`--dry-run` показывает версии, маршрут и план, не записывая результат. Если выходной каталог уже существует, команда откажется его перезаписывать; для замены укажите `--force`.
 
-## Current support status
-The first profile set includes Minecraft/NeoForge **1.21.11 / 21.11.48** and **26.3 / 26.3.0.99**. The real TeroMod project has now been migrated from 26.3 to 1.21.11 and its target Gradle build passed in GitHub Actions. This is a tested one-way migration path; the reverse semantic API patch set is not implemented yet. Other targets require an explicit NeoForge version and Java version. A profile being recognized does not mean every API change is automatically handled.
+## Структура и формат правил
 
-The built-in rules are intentionally small. Unknown changes are reported for manual work rather than guessed. Add custom transformations using `--rules path/to/rules.json`:
+Встроенные направленные правила хранятся по пути:
+
+```text
+src/main/resources/rules/
+  index.json
+  <source-version>/
+    <target-version>/
+      rules.json
+```
+
+Например, `rules/1.21.11/26.3/rules.json` — переход с 1.21.11 на 26.3. Каждое правило в файле обязано иметь те же `from` и `to`, что и папки. Для встроенного пакета также добавьте путь файла в `rules/index.json`. Это данные для общего обработчика, поэтому добавление версии/перехода не требует изменения Java-кода.
+
+Минимальный пример пользовательского файла:
 
 ```json
 {
   "rules": [
     {
-      "id": "example-forward",
+      "id": "rename-example-api",
       "from": "1.21.11",
       "to": "26.3",
       "includes": ["**/*.java"],
@@ -57,15 +92,34 @@ The built-in rules are intentionally small. Unknown changes are reported for man
 }
 ```
 
-Rules are exact version-edge transformations. Add a reverse rule to support the opposite direction. Use narrow `includes` patterns: broad text replacements can change comments or string literals as well as code.
+Поля:
 
-## Safety and limitations
-- NeoForge projects only; Forge and Fabric are rejected.
-- Source files and resources are copied before transformations.
-- Java sources are parsed for syntax diagnostics after rewriting.
-- The target Gradle build is run automatically by default; use `--skip-build` to disable it.
-- The tool updates common version properties, synchronizes existing `minecraft_version_range` entries in Gradle and NeoForge TOML configuration files with the target Minecraft version, and applies a small, version-specific set of tested NeoForge API patches.
-- A successful TeroMod compile validates the 26.3 -> 1.21.11 path only; runtime behavior in Minecraft still needs in-game testing.
-- Reverse semantic patches and broader version coverage are still in development.
-- Multi-hop migrations are possible when the rule database contains a connected sequence of version edges.
-- A complete migration requires version-specific API rules and validation against the target NeoForge toolchain. The project is built to grow through tested rule packs.
+- `id` — уникальный идентификатор правила в загруженном пакете.
+- `from`, `to` — исходная и целевая версии для одного направленного шага.
+- `includes` — обязательные glob-маски путей относительно корня проекта (`*`, `**`, `?`). Указывайте узкие маски: замена текста не разбирает Java AST и может затронуть комментарии/строки.
+- `find`, `replace` — непустой буквальный текст поиска и замена. Пустой `replace` удаляет совпадение. По умолчанию заменяются все совпадения в каждом подходящем текстовом файле.
+- `maxReplacements` — необязательный положительный предел замен на файл.
+- `skipIfContains` — необязательная защита: если файл уже содержит эту строку, данное правило пропускает весь файл; полезно для повторного запуска миграции.
+- `required` — необязательный флаг. Если он равен `true`, отсутствие замены по правилу останавливает миграцию с ошибкой. По умолчанию правило может не найти совпадений, что нормально для модов, не использующих соответствующий API.
+
+Правила в `rules.json` выполняются сверху вниз. Маршрут между несколькими версиями выбирается поиском кратчайшего пути, при равной длине учитывается порядок рёбер в загруженном наборе. Каждый шаг направленный: обратное правило нужно описать отдельно, а также проверить по API целевой версии.
+
+Функции меняются тем же буквальным механизмом: сузьте `includes` до нужного файла, задайте старую сигнатуру или тело в `find`, а новую — в `replace`. Для многострочного фрагмента используйте `\n` в JSON. Например, правило может заменить `protected int oldSignal(BlockState state) {` на `protected int getSignal(BlockState state, Direction direction) {`. Это намеренно явная текстовая замена, а не автоматическое понимание AST: перед запуском проверьте, что фрагмент достаточно уникален, задав `maxReplacements`.
+
+### Добавление пользовательского правила
+
+Создайте папку правил, например `my-migration-rules/1.21.11/26.3/rules.json`, и передайте корневую папку:
+
+```shell
+mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --rules ./my-migration-rules --neoforge-version 26.3.0.99 --java 25
+```
+
+Каталог правил дополняет встроенные правила; правило с уже существующим `id` заменяет встроенное правило с этим ID, остальные правила добавляются. При передаче `--rules path/to/rules.json` загружается самостоятельный набор правил без встроенных. Проверьте конфигурацию сначала через `--dry-run`, затем изучите секции `Rule applications`, `Warnings`, `Errors` и вывод Gradle в отчёте. Правило, которому нечего заменить, показывает ноль совпадений; `required: true` превращает это в явную ошибку.
+
+## Ограничения
+
+- Поддерживаются проекты NeoForge; проекты Forge/Fabric не мигрируются.
+- Встроенные профили сейчас есть только для 1.21.11 / NeoForge 21.11.48 / Java 21 и 26.3 / NeoForge 26.3.0.99 / Java 25.
+- Единственное встроенное покрытое направление API — 26.3 → 1.21.11. Перенос 1.21.11 → 26.3 и прочие переходы требуют отдельных, проверенных пользователем правил; профиль версии и запуск сборки не заменяют такие правила.
+- Успешная сборка не проверяет поведение мода в игре. Проверяйте мигрированный проект и тестируйте его отдельно.
+- Шаблон заготавливается отдельно официальным NeoForge-генератором и передаётся через `--template`; инструмент проверяет и собирает его, но не загружает MDK сам.

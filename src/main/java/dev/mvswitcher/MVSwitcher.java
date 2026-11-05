@@ -41,7 +41,8 @@ public class MVSwitcher implements Runnable {
         @Option(names = {"--neoforge-version"}, description = "Override target NeoForge version.") String neoForgeVersion;
         @Option(names = {"--java"}, description = "Target Java major version (default from version profile).") Integer javaVersion;
         @Option(names = {"--output"}, description = "Output directory (default: converted/<project>-<target>).") Path output;
-        @Option(names = {"--rules"}, description = "Custom JSON rule pack.") Path rules;
+        @Option(names = {"--rules"}, description = "Custom rules JSON file (standalone) or rules directory (overrides bundled rule IDs).") Path rules;
+        @Option(names = {"--template"}, description = "Prepared target NeoForge MDK directory or ZIP; build it before source files are transferred.") Path template;
         @Option(names = {"--dry-run"}, description = "Analyze and plan without writing files.") boolean dryRun;
         @Option(names = {"--force"}, description = "Allow an existing output directory to be replaced.") boolean force;
         @Option(names = {"--skip-build"}, description = "Do not run the target Gradle build after migration.") boolean skipBuild;
@@ -49,7 +50,7 @@ public class MVSwitcher implements Runnable {
         public Integer call() {
             try {
                 MigrationOptions options = new MigrationOptions(input, from, to, neoForgeVersion,
-                        javaVersion, output, rules, dryRun, force, skipBuild);
+                        javaVersion, output, rules, template, dryRun, force, skipBuild);
                 MigrationReport report = MigrationEngine.migrate(options);
                 System.out.println(report.toText());
                 return report.hasErrors() ? 1 : 0;
@@ -66,6 +67,13 @@ public class MVSwitcher implements Runnable {
             VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s NeoForge %-14s Java %s%n",
                     v.id(), v.minecraft(), v.neoForge() == null ? "override required" : v.neoForge(), v.javaMajor()));
             System.out.println("Unknown versions can still be targeted with --to and --neoforge-version/--java.");
+            try {
+                System.out.println("Bundled directed rule paths:");
+                MigrationEngine.bundledRoutes().forEach(path -> System.out.println("  " + path));
+            } catch (Exception e) {
+                System.err.println("Could not load migration rule paths: " + e.getMessage());
+                return 2;
+            }
             return 0;
         }
     }
