@@ -129,6 +129,85 @@ class MigrationEngineTest {
         assertFalse(storage.contains("Identifier.fromNamespaceAndPath"));
     }
 
+    @Test void appliesBundledReverseApiRules() throws Exception {
+        Path source = temp.resolve("ReverseProject");
+        Files.createDirectories(source.resolve("src/main/resources/META-INF"));
+        Files.createDirectories(source.resolve("src/main/java/example"));
+        Files.writeString(source.resolve("build.gradle"), "plugins { id 'net.neoforged.gradle.userdev' }\n");
+        Files.writeString(source.resolve("gradle.properties"),
+                "minecraft_version=1.21.11\nneo_version=21.11.48\n");
+        Files.writeString(source.resolve("src/main/resources/META-INF/neoforge.mods.toml"), "modLoader=\"javafml\"\n");
+        Files.writeString(source.resolve("src/main/java/example/EnderDispenserScreen.java"), """
+                import net.minecraft.client.gui.GuiGraphics;
+                class EnderDispenserScreen {
+                    EnderDispenserScreen() {
+                        super(menu, inventory, title);
+                        this.imageWidth = 176;
+                        this.imageHeight = 165;
+                    }
+                    public void renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {}
+                    protected void renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY) {}
+                }
+                """);
+        Files.writeString(source.resolve("src/main/java/example/PlayerDetectorRailBlock.java"), """
+                public class PlayerDetectorRailBlock extends BaseRailBlock {
+                    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);
+                    @Override protected com.mojang.serialization.MapCodec<? extends BaseRailBlock> codec() { return CODEC; }
+                    @Override protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) { return 15; }
+                }
+                """);
+        Files.writeString(source.resolve("src/main/java/example/RailCreatorBlock.java"), """
+                public class RailCreatorBlock extends BaseEntityBlock {
+                    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);
+                    @Override protected com.mojang.serialization.MapCodec<? extends BaseEntityBlock> codec() { return CODEC; }
+                    @Override public void playerDestroy(@NonNull Level level, @NonNull Player player,
+                        @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity,
+                        @NonNull ItemStack destroyedWith) {
+                        super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);
+                        if (blockEntity instanceof RailCreatorEntity entity) {
+                            if (level instanceof ServerLevel serverLevel) {
+                                entity.dropInputs(serverLevel);
+                            }
+                        }
+                    }
+                }
+                """);
+        Files.writeString(source.resolve("src/main/java/example/RailCreatorEntity.java"),
+                "class RailCreatorEntity { void update() { recipe.value().assemble(input, serverLevel.registryAccess()); } }");
+        Files.writeString(source.resolve("src/main/java/example/EnderDispenserStorage.java"),
+                "class EnderDispenserStorage { String key = TeroMod.MODID + \"_ender_dispenser\"; }");
+        Files.writeString(source.resolve("src/main/java/example/TeroMod.java"),
+                "class TeroMod { void config() { modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC); } }");
+
+        Path output = temp.resolve("reverse-migrated");
+        var report = MigrationEngine.migrate(new MigrationOptions(
+                source, "1.21.11", "26.3", null, null, output, null, null, false, false, true));
+
+        assertFalse(report.hasErrors());
+        String screen = Files.readString(output.resolve("src/main/java/example/EnderDispenserScreen.java"));
+        assertTrue(screen.contains("GuiGraphicsExtractor"));
+        assertTrue(screen.contains("super(menu, inventory, title, 176, 165);"));
+        assertTrue(screen.contains("extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick)"));
+        assertTrue(screen.contains("extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY)"));
+        assertFalse(screen.contains("this.imageWidth"));
+        String rail = Files.readString(output.resolve("src/main/java/example/PlayerDetectorRailBlock.java"));
+        assertTrue(rail.contains("ownSignal(BlockState state, BlockGetter level, BlockPos pos)"));
+        assertFalse(rail.contains("MapCodec"));
+        String block = Files.readString(output.resolve("src/main/java/example/RailCreatorBlock.java"));
+        assertTrue(block.contains("playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,"));
+        assertTrue(block.contains("super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);"));
+        assertTrue(block.contains("entity.dropInputs(level);"));
+        assertFalse(block.contains("MapCodec"));
+        assertTrue(Files.readString(output.resolve("src/main/java/example/RailCreatorEntity.java"))
+                .contains("recipe.value().assemble(input)"));
+        assertTrue(Files.readString(output.resolve("src/main/java/example/EnderDispenserStorage.java"))
+                .contains("Identifier.fromNamespaceAndPath(TeroMod.MODID, \"ender_dispenser\")"));
+        assertTrue(Files.readString(output.resolve("src/main/java/example/TeroMod.java"))
+                .contains("ModConfig.Type.LOCAL"));
+        assertTrue(Files.readString(output.resolve("gradle.properties")).contains("minecraft_version=26.3"));
+        assertTrue(report.toText().contains("Selected migration route: 1.21.11 -> 26.3"));
+    }
+
     @Test void targetTemplateOwnsBuildFilesWhileModSourcesAreOverlaid() throws Exception {
         Path source = temp.resolve("Source");
         Path template = temp.resolve("Template");
@@ -189,9 +268,10 @@ class MigrationEngineTest {
         var pack = MigrationEngine.loadRules(rulesRoot);
         var route = MigrationEngine.findRoute(pack.rules, "1.21.11", "26.3");
         assertEquals(1, route.size());
-        assertEquals("reverse-test", route.get(0).id);
+        assertEquals("1.21.11", route.get(0).from);
         assertEquals("26.3", route.get(0).to);
-        assertEquals(List.of("26.3 -> 1.21.11"), MigrationEngine.bundledRoutes());
+        assertTrue(pack.rules.stream().anyMatch(rule -> "reverse-test".equals(rule.id)));
+        assertEquals(List.of("26.3 -> 1.21.11", "1.21.11 -> 26.3"), MigrationEngine.bundledRoutes());
     }
 
     @Test void invalidRulesFailBeforeCreatingOutput() throws Exception {

@@ -1,0 +1,120 @@
+{
+  "rules": [
+    {
+      "id": "reverse-gui-screen-graphics-type",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "find": "import net.minecraft.client.gui.GuiGraphics;",
+      "replace": "import net.minecraft.client.gui.GuiGraphicsExtractor;",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-gui-screen-graphics-parameter",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "find": "GuiGraphics graphics",
+      "replace": "GuiGraphicsExtractor graphics"
+    },
+    {
+      "id": "reverse-gui-screen-background-method",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "findRegex": "renderBg\\(@NonNull GuiGraphicsExtractor graphics,\\s*float partialTick,\\s*int mouseX,\\s*int mouseY\\)",
+      "replace": "extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick)",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-gui-screen-label-method",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "find": "renderLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY)",
+      "replace": "extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY)",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-gui-screen-size-constructor",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/*.java"],
+      "findRegex": "super\\(menu, inventory, title\\);\\s*this\\.imageWidth\\s*=\\s*(\\d+);\\s*this\\.imageHeight\\s*=\\s*(\\d+);",
+      "replace": "super(menu, inventory, title, $1, $2);",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-player-detector-rail-signal-signature",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/PlayerDetectorRailBlock.java"],
+      "find": "protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) {",
+      "replace": "protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) {",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-player-detector-rail-codec",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/PlayerDetectorRailBlock.java"],
+      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec\\(PlayerDetectorRailBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseRailBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
+      "replace": "",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-rail-creator-block-codec",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/RailCreatorBlock.java"],
+      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<RailCreatorBlock> CODEC = simpleCodec\\(RailCreatorBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseEntityBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
+      "replace": "",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-rail-creator-player-destroy-signature",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/RailCreatorBlock.java"],
+      "find": "public void playerDestroy(@NonNull Level level, @NonNull Player player,",
+      "replace": "public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-rail-creator-player-destroy-server-guard",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/RailCreatorBlock.java"],
+      "findRegex": "if \\(level instanceof ServerLevel serverLevel\\)\\s*\\{\\s*entity\\.dropInputs\\(serverLevel\\);\\s*\\}",
+      "replace": "entity.dropInputs(level);",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-saved-data-type-name-to-identifier",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/EnderDispenserStorage.java"],
+      "find": "TeroMod.MODID + \"_ender_dispenser\"",
+      "replace": "Identifier.fromNamespaceAndPath(TeroMod.MODID, \"ender_dispenser\")",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-recipe-assemble-without-registry-access",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/RailCreatorEntity.java"],
+      "find": "recipe.value().assemble(input, serverLevel.registryAccess())",
+      "replace": "recipe.value().assemble(input)",
+      "maxReplacements": 1
+    },
+    {
+      "id": "reverse-common-config-type-to-local",
+      "from": "1.21.11",
+      "to": "26.3",
+      "includes": ["**/TeroMod.java"],
+      "find": "ModConfig.Type.COMMON",
+      "replace": "ModConfig.Type.LOCAL",
+      "maxReplacements": 1
+    }
+  ]
+}
