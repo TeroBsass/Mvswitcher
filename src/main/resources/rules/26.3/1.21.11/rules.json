@@ -1,0 +1,120 @@
+{
+  "rules": [
+    {
+      "id": "gui-screen-graphics-type",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "find": "import net.minecraft.client.gui.GuiGraphicsExtractor;",
+      "replace": "import net.minecraft.client.gui.GuiGraphics;",
+      "maxReplacements": 1
+    },
+    {
+      "id": "gui-screen-graphics-parameter",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "find": "GuiGraphicsExtractor graphics",
+      "replace": "GuiGraphics graphics"
+    },
+    {
+      "id": "gui-screen-background-method",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "findRegex": "extractBackground\\(@NonNull GuiGraphics graphics,\\s*int mouseX,\\s*int mouseY,\\s*float partialTick\\)",
+      "replace": "renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY)",
+      "maxReplacements": 1
+    },
+    {
+      "id": "gui-screen-label-method",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "find": "extractLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)",
+      "replace": "renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)",
+      "maxReplacements": 1
+    },
+    {
+      "id": "gui-screen-size-constructor",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*.java"],
+      "findRegex": "super\\(menu, inventory, title,\\s*(\\d+),\\s*(\\d+)\\);",
+      "replace": "super(menu, inventory, title);\n        this.imageWidth = $1;\n        this.imageHeight = $2;",
+      "maxReplacements": 1
+    },
+    {
+      "id": "player-detector-rail-signal-signature",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/PlayerDetectorRailBlock.java"],
+      "find": "protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) {",
+      "replace": "protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) {",
+      "maxReplacements": 1
+    },
+    {
+      "id": "player-detector-rail-codec",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/PlayerDetectorRailBlock.java"],
+      "find": "public class PlayerDetectorRailBlock extends BaseRailBlock {",
+      "replace": "public class PlayerDetectorRailBlock extends BaseRailBlock {\n    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);\n    @Override protected com.mojang.serialization.MapCodec<? extends BaseRailBlock> codec() { return CODEC; }",
+      "maxReplacements": 1,
+      "skipIfContains": "MapCodec<PlayerDetectorRailBlock>"
+    },
+    {
+      "id": "rail-creator-block-codec",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/RailCreatorBlock.java"],
+      "find": "public class RailCreatorBlock extends BaseEntityBlock {",
+      "replace": "public class RailCreatorBlock extends BaseEntityBlock {\n    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);\n    @Override protected com.mojang.serialization.MapCodec<? extends BaseEntityBlock> codec() { return CODEC; }",
+      "maxReplacements": 1,
+      "skipIfContains": "MapCodec<RailCreatorBlock>"
+    },
+    {
+      "id": "rail-creator-player-destroy-signature",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/RailCreatorBlock.java"],
+      "find": "public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,",
+      "replace": "public void playerDestroy(@NonNull Level level, @NonNull Player player,",
+      "maxReplacements": 1
+    },
+    {
+      "id": "rail-creator-player-destroy-server-guard",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/RailCreatorBlock.java"],
+      "find": "entity.dropInputs(level);",
+      "replace": "if (level instanceof ServerLevel serverLevel) {\n                entity.dropInputs(serverLevel);\n            }",
+      "maxReplacements": 1
+    },
+    {
+      "id": "saved-data-type-identifier-to-name",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*Storage.java"],
+      "find": "Identifier.fromNamespaceAndPath(TeroMod.MODID, \"ender_dispenser\")",
+      "replace": "TeroMod.MODID + \"_ender_dispenser\"",
+      "maxReplacements": 1
+    },
+    {
+      "id": "recipe-assemble-registry-access",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/RailCreatorEntity.java"],
+      "find": "recipe.value().assemble(input)",
+      "replace": "recipe.value().assemble(input, serverLevel.registryAccess())"
+    },
+    {
+      "id": "common-config-type",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/TeroMod.java"],
+      "find": "ModConfig.Type.LOCAL",
+      "replace": "ModConfig.Type.COMMON"
+    }
+  ]
+}
