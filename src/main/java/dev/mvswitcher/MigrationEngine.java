@@ -189,7 +189,7 @@ public final class MigrationEngine {
                     String after = updated.toString();
                     if (!before.equals(after)) {
                         Files.writeString(file, after);
-                        report.changed(root.relativize(file).toString().replace('\\', '/') +
+                        report.changed(root.relativize(file).toString().replace(File.separatorChar, '/') +
                                 " (minecraft_version_range -> [" + mc + "])");
                     }
                 }
@@ -211,7 +211,7 @@ public final class MigrationEngine {
                         Matcher.quoteReplacement("JavaLanguageVersion.of(" + java + ")"));
                 if (!before.equals(after)) {
                     Files.writeString(file, after);
-                    report.changed(root.relativize(file).toString().replace('\\\\', '/') +
+                    report.changed(root.relativize(file).toString().replace(File.separatorChar, '/') +
                             " (Java toolchain -> " + java + ")");
                 }
             }
