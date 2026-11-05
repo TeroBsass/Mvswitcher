@@ -38,11 +38,15 @@ class MigrationEngineTest {
         Path source = temp.resolve("src");
         Files.createDirectories(source);
         Files.writeString(source.resolve("RailCreatorScreen.java"), """
-                import net.minecraft.client.gui.GuiGraphicsExtractor;
+                import net.minecraft.client.gui.GuiGraphics;
                 class RailCreatorScreen {
-                    RailCreatorScreen() { super(menu, inventory, title, 176, 166); }
-                    public void extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {}
-                    protected void extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY) {}
+                    RailCreatorScreen() {
+                        super(menu, inventory, title);
+                        this.imageWidth = 176;
+                        this.imageHeight = 166;
+                    }
+                    public void renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {}
+                    protected void renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY) {}
                 }
                 """);
         Files.writeString(source.resolve("PlayerDetectorRailBlock.java"), """
@@ -134,7 +138,7 @@ class MigrationEngineTest {
         assertTrue(Files.readString(output.resolve("gradle.properties")).contains("minecraft_version=26.3"));
         assertTrue(Files.readString(output.resolve("settings.gradle")).contains("minecraft_version_range=[26.3]"));
         assertTrue(Files.readString(output.resolve("build.gradle")).contains("JavaLanguageVersion.of(25)"));
-        assertTrue(Files.readString(output.resolve("src/main/java/com/tero/teromod/Ids.java")).contains("Identifier.fromNamespaceAndPath"));
+        assertTrue(Files.readString(output.resolve("src/main/java/com/tero/teromod/Ids.java")).contains("ResourceLocation.fromNamespaceAndPath"));
         assertTrue(Files.readString(output.resolve("src/main/java/com/tero/teromod/RailCreatorScreen.java")).contains("GuiGraphics"));
         assertTrue(Files.readString(output.resolve("src/main/java/com/tero/teromod/RailCreatorScreen.java")).contains("renderBg"));
         assertTrue(Files.readString(output.resolve("src/main/java/com/tero/teromod/PlayerDetectorRailBlock.java")).contains("MapCodec<PlayerDetectorRailBlock>"));
