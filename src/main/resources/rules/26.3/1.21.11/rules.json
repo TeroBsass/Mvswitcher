@@ -4,7 +4,7 @@
       "id": "gui-screen-graphics-type",
       "from": "26.3",
       "to": "1.21.11",
-      "includes": ["**/RailCreatorScreen.java"],
+      "includes": ["**/*.java"],
       "find": "import net.minecraft.client.gui.GuiGraphicsExtractor;",
       "replace": "import net.minecraft.client.gui.GuiGraphics;",
       "maxReplacements": 1
@@ -13,7 +13,7 @@
       "id": "gui-screen-graphics-parameter",
       "from": "26.3",
       "to": "1.21.11",
-      "includes": ["**/RailCreatorScreen.java"],
+      "includes": ["**/*.java"],
       "find": "GuiGraphicsExtractor graphics",
       "replace": "GuiGraphics graphics"
     },
@@ -21,8 +21,8 @@
       "id": "gui-screen-background-method",
       "from": "26.3",
       "to": "1.21.11",
-      "includes": ["**/RailCreatorScreen.java"],
-      "find": "extractBackground(@NonNull GuiGraphics graphics, int mouseX, int mouseY, float partialTick)",
+      "includes": ["**/*.java"],
+      "findRegex": "extractBackground\\(@NonNull GuiGraphics graphics,\\s*int mouseX,\\s*int mouseY,\\s*float partialTick\\)",
       "replace": "renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY)",
       "maxReplacements": 1
     },
@@ -30,7 +30,7 @@
       "id": "gui-screen-label-method",
       "from": "26.3",
       "to": "1.21.11",
-      "includes": ["**/RailCreatorScreen.java"],
+      "includes": ["**/*.java"],
       "find": "extractLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)",
       "replace": "renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY)",
       "maxReplacements": 1
@@ -39,9 +39,9 @@
       "id": "gui-screen-size-constructor",
       "from": "26.3",
       "to": "1.21.11",
-      "includes": ["**/RailCreatorScreen.java"],
-      "find": "super(menu, inventory, title, 176, 166);",
-      "replace": "super(menu, inventory, title);\n        this.imageWidth = 176;\n        this.imageHeight = 166;",
+      "includes": ["**/*.java"],
+      "findRegex": "super\\(menu, inventory, title,\\s*(\\d+),\\s*(\\d+)\\);",
+      "replace": "super(menu, inventory, title);\n        this.imageWidth = $1;\n        this.imageHeight = $2;",
       "maxReplacements": 1
     },
     {
@@ -87,8 +87,17 @@
       "from": "26.3",
       "to": "1.21.11",
       "includes": ["**/RailCreatorBlock.java"],
-      "find": "if (blockEntity instanceof RailCreatorEntity entity) {\n            entity.dropInputs(level);",
-      "replace": "if (level instanceof ServerLevel serverLevel && blockEntity instanceof RailCreatorEntity entity) {\n            entity.dropInputs(serverLevel);",
+      "find": "entity.dropInputs(level);",
+      "replace": "if (level instanceof ServerLevel serverLevel) {\n                entity.dropInputs(serverLevel);\n            }",
+      "maxReplacements": 1
+    },
+    {
+      "id": "saved-data-type-identifier-to-name",
+      "from": "26.3",
+      "to": "1.21.11",
+      "includes": ["**/*Storage.java"],
+      "find": "Identifier.fromNamespaceAndPath(TeroMod.MODID, \"ender_dispenser\")",
+      "replace": "TeroMod.MODID + \"_ender_dispenser\"",
       "maxReplacements": 1
     },
     {

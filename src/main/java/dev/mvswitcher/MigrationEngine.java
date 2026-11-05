@@ -270,9 +270,20 @@ public final class MigrationEngine {
                 throw new IOException("Rule " + rule.id + " must have valid 'from' and 'to' versions.");
             }
             if (rule.from.equals(rule.to)) throw new IOException("Rule " + rule.id + " has the same source and target version.");
-            if (rule.find == null || rule.find.isEmpty()) throw new IOException("Rule " + rule.id + " must have a non-empty 'find' string.");
+            boolean hasLiteralFind = rule.find != null && !rule.find.isEmpty();
+            boolean hasRegexFind = rule.findRegex != null && !rule.findRegex.isEmpty();
+            if (hasLiteralFind == hasRegexFind) {
+                throw new IOException("Rule " + rule.id + " must set exactly one non-empty 'find' or 'findRegex' value.");
+            }
             if (rule.replace == null) throw new IOException("Rule " + rule.id + " must have a 'replace' string (use an empty string to delete text).");
-            if (rule.find.equals(rule.replace)) throw new IOException("Rule " + rule.id + " is a no-op: 'find' and 'replace' are identical.");
+            if (hasLiteralFind && rule.find.equals(rule.replace)) throw new IOException("Rule " + rule.id + " is a no-op: 'find' and 'replace' are identical.");
+            if (hasRegexFind) {
+                try {
+                    Pattern.compile(rule.findRegex);
+                } catch (PatternSyntaxException e) {
+                    throw new IOException("Rule " + rule.id + " has an invalid 'findRegex': " + e.getMessage(), e);
+                }
+            }
             if (rule.includes == null || rule.includes.isEmpty() || rule.includes.stream().anyMatch(MigrationEngine::blank)) {
                 throw new IOException("Rule " + rule.id + " must provide at least one non-empty 'includes' glob.");
             }
@@ -310,7 +321,9 @@ public final class MigrationEngine {
                             throw new IOException("Rule " + rule.id + " could not read " + relative + ": " + e.getMessage(), e);
                         }
                         if (rule.skipIfContains != null && before.contains(rule.skipIfContains)) continue;
-                        Replacement result = replaceLiteral(before, rule.find, rule.replace, rule.maxReplacements);
+                        Replacement result = rule.findRegex == null
+                                ? replaceLiteral(before, rule.find, rule.replace, rule.maxReplacements)
+                                : replaceRegex(before, rule.findRegex, rule.replace, rule.maxReplacements, rule.id);
                         if (result.count > 0) {
                             Files.writeString(file, result.text);
                             replacements += result.count;
@@ -397,6 +410,24 @@ public final class MigrationEngine {
         return new Replacement(output.toString(), count);
     }
 
+    private static Replacement replaceRegex(String source, String regex, String replace, Integer max, String ruleId)
+            throws IOException {
+        Matcher matcher = Pattern.compile(regex).matcher(source);
+        StringBuffer output = new StringBuffer();
+        int count = 0;
+        try {
+            while (matcher.find() && (max == null || count < max)) {
+                matcher.appendReplacement(output, replace);
+                count++;
+            }
+            if (count == 0) return new Replacement(source, 0);
+            matcher.appendTail(output);
+            return new Replacement(output.toString(), count);
+        } catch (IllegalArgumentException | IndexOutOfBoundsException e) {
+            throw new IOException("Rule " + ruleId + " has an invalid regex replacement: " + e.getMessage(), e);
+        }
+    }
+
     private record Replacement(String text, int count) {}
 
     private static void updateBuildFiles(Path root, String mc, String neo, int java, MigrationReport report) throws IOException {
@@ -474,7 +505,7 @@ public final class MigrationEngine {
     public static class RulePack { public List<MigrationRule> rules = new ArrayList<>(); }
     public static class RuleIndex { public List<String> files = new ArrayList<>(); }
     public static class MigrationRule {
-        public String id, from, to, find, replace, skipIfContains;
+        public String id, from, to, find, findRegex, replace, skipIfContains;
         public List<String> includes = new ArrayList<>();
         public Integer maxReplacements;
         public boolean required;

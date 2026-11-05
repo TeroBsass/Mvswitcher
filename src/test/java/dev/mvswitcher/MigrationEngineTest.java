@@ -52,6 +52,15 @@ class MigrationEngineTest {
                     protected void extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY) {}
                 }
                 """);
+        Files.writeString(source.resolve("src/main/java/example/EnderDispenserScreen.java"), """
+                import net.minecraft.client.gui.GuiGraphicsExtractor;
+                class EnderDispenserScreen {
+                    EnderDispenserScreen() { super(menu, inventory, title, 176, 165); }
+                    public void extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY,
+                                                  float partialTick) {}
+                    protected void extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY) {}
+                }
+                """);
         Files.writeString(source.resolve("src/main/java/example/PlayerDetectorRailBlock.java"), """
                 public class PlayerDetectorRailBlock extends BaseRailBlock {
                     @Override protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) { return 15; }
@@ -71,6 +80,14 @@ class MigrationEngineTest {
                 "class RailCreatorEntity { void update() { recipe.value().assemble(input); } }");
         Files.writeString(source.resolve("src/main/java/example/TeroMod.java"),
                 "class TeroMod { void config() { modContainer.registerConfig(ModConfig.Type.LOCAL, Config.SPEC); } }");
+        Files.writeString(source.resolve("src/main/java/example/EnderDispenserStorage.java"), """
+                class EnderDispenserStorage {
+                    private static final SavedDataType<EnderDispenserStorage> DATA_TYPE =
+                        new SavedDataType<EnderDispenserStorage>(
+                            Identifier.fromNamespaceAndPath(TeroMod.MODID, "ender_dispenser"),
+                            EnderDispenserStorage::new, CODEC, DataFixTypes.LEVEL);
+                }
+                """);
 
         Path output = temp.resolve("migrated");
         var report = MigrationEngine.migrate(new MigrationOptions(
@@ -82,6 +99,10 @@ class MigrationEngineTest {
         assertTrue(screen.contains("renderBg"));
         assertTrue(screen.contains("renderLabels"));
         assertTrue(screen.contains("this.imageWidth = 176"));
+        String enderScreen = Files.readString(output.resolve("src/main/java/example/EnderDispenserScreen.java"));
+        assertTrue(enderScreen.contains("renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY)"));
+        assertTrue(enderScreen.contains("this.imageHeight = 165"));
+        assertFalse(enderScreen.contains("GuiGraphicsExtractor"));
         String rail = Files.readString(output.resolve("src/main/java/example/PlayerDetectorRailBlock.java"));
         assertTrue(rail.contains("MapCodec<PlayerDetectorRailBlock>"));
         assertTrue(rail.contains("getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction)"));
@@ -93,6 +114,9 @@ class MigrationEngineTest {
                 .contains("assemble(input, serverLevel.registryAccess())"));
         assertTrue(Files.readString(output.resolve("src/main/java/example/TeroMod.java"))
                 .contains("ModConfig.Type.COMMON"));
+        String storage = Files.readString(output.resolve("src/main/java/example/EnderDispenserStorage.java"));
+        assertTrue(storage.contains("TeroMod.MODID + \"_ender_dispenser\""));
+        assertFalse(storage.contains("Identifier.fromNamespaceAndPath"));
     }
 
     @Test void targetTemplateOwnsBuildFilesWhileModSourcesAreOverlaid() throws Exception {
