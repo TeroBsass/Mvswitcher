@@ -155,7 +155,7 @@ public final class MigrationEngine {
             Files.writeString(props, s);
             report.changed("gradle.properties (target versions)");
         } else report.warning("gradle.properties not found; target versions were not written there.");
-        updateMinecraftVersionRanges(root, mc, report);
+        updateMinecraftVersionRanges(root, mc, report);\n        updateJavaToolchain(root, java, report);
     }
 
     /**
@@ -191,6 +191,27 @@ public final class MigrationEngine {
                         report.changed(root.relativize(file).toString().replace('\\', '/') +
                                 " (minecraft_version_range -> [" + mc + "])");
                     }
+                }
+            }
+        }
+    }
+
+
+    /** Keep the Java toolchain in build.gradle aligned with the selected Minecraft profile. */
+    private static void updateJavaToolchain(Path root, int java, MigrationReport report) throws IOException {
+        Pattern toolchain = Pattern.compile("JavaLanguageVersion\\.of\\(\\d+\\)");
+        try (var paths = Files.walk(root)) {
+            for (Path file : paths.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().equals("build.gradle") ||
+                            p.getFileName().toString().equals("build.gradle.kts"))
+                    .toList()) {
+                String before = Files.readString(file);
+                String after = toolchain.matcher(before).replaceAll(
+                        Matcher.quoteReplacement("JavaLanguageVersion.of(" + java + ")"));
+                if (!before.equals(after)) {
+                    Files.writeString(file, after);
+                    report.changed(root.relativize(file).toString().replace('\\\\', '/') +
+                            " (Java toolchain -> " + java + ")");
                 }
             }
         }
