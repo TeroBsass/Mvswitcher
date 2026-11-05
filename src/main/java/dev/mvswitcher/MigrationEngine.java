@@ -86,7 +86,7 @@ public final class MigrationEngine {
                 }
                 try (var paths = Files.walk(root)) {
                     for (Path file : paths.filter(Files::isRegularFile).toList()) {
-                        String rel = root.relativize(file).toString().replace('\\', '/');
+                        String rel = root.relativize(file).toString().replace(File.separatorChar, '/');
                         if (!matches(rule.includes, rel)) continue;
                         String before = Files.readString(file);
                         String after = before.replace(rule.find, rule.replace);
@@ -155,7 +155,8 @@ public final class MigrationEngine {
             Files.writeString(props, s);
             report.changed("gradle.properties (target versions)");
         } else report.warning("gradle.properties not found; target versions were not written there.");
-        updateMinecraftVersionRanges(root, mc, report);\n        updateJavaToolchain(root, java, report);
+        updateMinecraftVersionRanges(root, mc, report);
+        updateJavaToolchain(root, java, report);
     }
 
     /**
