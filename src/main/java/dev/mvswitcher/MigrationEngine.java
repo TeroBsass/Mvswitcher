@@ -86,7 +86,7 @@ public final class MigrationEngine {
                 }
                 try (var paths = Files.walk(root)) {
                     for (Path file : paths.filter(Files::isRegularFile).toList()) {
-                        String rel = root.relativize(file).toString().replace('\\', '/');
+                        String rel = root.relativize(file).toString().replace(File.separatorChar, '/');
                         if (!matches(rule.includes, rel)) continue;
                         String before = Files.readString(file);
                         String after = before.replace(rule.find, rule.replace);
@@ -156,6 +156,7 @@ public final class MigrationEngine {
             report.changed("gradle.properties (target versions)");
         } else report.warning("gradle.properties not found; target versions were not written there.");
         updateMinecraftVersionRanges(root, mc, report);
+        updateJavaToolchain(root, java, report);
     }
 
     /**
@@ -188,9 +189,30 @@ public final class MigrationEngine {
                     String after = updated.toString();
                     if (!before.equals(after)) {
                         Files.writeString(file, after);
-                        report.changed(root.relativize(file).toString().replace('\\', '/') +
+                        report.changed(root.relativize(file).toString().replace(File.separatorChar, '/') +
                                 " (minecraft_version_range -> [" + mc + "])");
                     }
+                }
+            }
+        }
+    }
+
+
+    /** Keep the Java toolchain in build.gradle aligned with the selected Minecraft profile. */
+    private static void updateJavaToolchain(Path root, int java, MigrationReport report) throws IOException {
+        Pattern toolchain = Pattern.compile("JavaLanguageVersion\\.of\\(\\d+\\)");
+        try (var paths = Files.walk(root)) {
+            for (Path file : paths.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().equals("build.gradle") ||
+                            p.getFileName().toString().equals("build.gradle.kts"))
+                    .toList()) {
+                String before = Files.readString(file);
+                String after = toolchain.matcher(before).replaceAll(
+                        Matcher.quoteReplacement("JavaLanguageVersion.of(" + java + ")"));
+                if (!before.equals(after)) {
+                    Files.writeString(file, after);
+                    report.changed(root.relativize(file).toString().replace(File.separatorChar, '/') +
+                            " (Java toolchain -> " + java + ")");
                 }
             }
         }
