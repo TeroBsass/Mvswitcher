@@ -56,10 +56,10 @@ class MigrationEngineTest {
                 """);
         Files.writeString(source.resolve("RailCreatorBlock.java"), """
                 public class RailCreatorBlock extends BaseEntityBlock {
-                    @Override public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,
+                    @Override public void playerDestroy(@NonNull Level level, @NonNull Player player,
                         @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity, @NonNull ItemStack stack) {
-                        if (blockEntity instanceof RailCreatorEntity entity) {
-                            entity.dropInputs(level);
+                        if (level instanceof ServerLevel serverLevel && blockEntity instanceof RailCreatorEntity entity) {
+                            entity.dropInputs(serverLevel);
                         }
                     }
                 }
