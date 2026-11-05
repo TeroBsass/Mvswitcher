@@ -51,7 +51,7 @@ class MigrationEngineTest {
                 """);
         Files.writeString(source.resolve("PlayerDetectorRailBlock.java"), """
                 public class PlayerDetectorRailBlock extends BaseRailBlock {
-                    @Override protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) { return 15; }
+                    @Override protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) { return 15; }
                 }
                 """);
         Files.writeString(source.resolve("RailCreatorBlock.java"), """
@@ -73,17 +73,17 @@ class MigrationEngineTest {
         NeoForgeApiPatcher.apply(source, "26.3", "1.21.11", report);
 
         String screen = Files.readString(source.resolve("RailCreatorScreen.java"));
-        assertTrue(screen.contains("GuiGraphics"));
-        assertTrue(screen.contains("renderBg"));
-        assertTrue(screen.contains("renderLabels"));
-        assertTrue(screen.contains("this.imageWidth = 176"));
+        assertTrue(screen.contains("GuiGraphicsExtractor"));
+        assertTrue(screen.contains("extractBackground"));
+        assertTrue(screen.contains("extractLabels"));
+        assertTrue(screen.contains("super(menu, inventory, title, 176, 166)"));
         String rail = Files.readString(source.resolve("PlayerDetectorRailBlock.java"));
-        assertTrue(rail.contains("MapCodec<PlayerDetectorRailBlock>"));
-        assertTrue(rail.contains("getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction)"));
+        assertFalse(rail.contains("MapCodec<PlayerDetectorRailBlock>"));
+        assertTrue(rail.contains("ownSignal(BlockState state, BlockGetter level, BlockPos pos)"));
         String block = Files.readString(source.resolve("RailCreatorBlock.java"));
-        assertTrue(block.contains("MapCodec<RailCreatorBlock>"));
-        assertTrue(block.contains("Level level, @NonNull Player player"));
-        assertTrue(block.contains("entity.dropInputs(serverLevel)"));
+        assertFalse(block.contains("MapCodec<RailCreatorBlock>"));
+        assertTrue(block.contains("ServerLevel level, @NonNull ServerPlayer player"));
+        assertTrue(block.contains("entity.dropInputs(level)"));
         assertTrue(Files.readString(source.resolve("RailCreatorEntity.java")).contains("assemble(input, serverLevel.registryAccess())"));
         assertTrue(Files.readString(source.resolve("TeroMod.java")).contains("ModConfig.Type.COMMON"));
     }
