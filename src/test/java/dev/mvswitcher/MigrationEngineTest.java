@@ -24,6 +24,13 @@ class MigrationEngineTest {
         Files.writeString(metadata.resolve("neoforge.mods.toml"), "modLoader=\"javafml\"\n");
         String original = "package example; import net.minecraft.resources.Identifier; class Example { Identifier id; }";
         Files.writeString(java.resolve("Example.java"), original);
+        Path nestedBuildJava = source.resolve("copilot-worktrees/old-session/build/generated/OldApi.java");
+        Files.createDirectories(nestedBuildJava.getParent());
+        Files.writeString(nestedBuildJava, "class OldApi {}");
+        Path nestedRepositoryJava = source.resolve("nested-project/src/main/java/example/OldApi.java");
+        Files.createDirectories(nestedRepositoryJava.getParent());
+        Files.createDirectories(source.resolve("nested-project/.git"));
+        Files.writeString(nestedRepositoryJava, "class OldApi {}");
 
         Path output = temp.resolve("forward");
         var report = MigrationEngine.migrate(new MigrationOptions(
@@ -32,6 +39,9 @@ class MigrationEngineTest {
         assertFalse(report.hasErrors());
         assertEquals(original, Files.readString(java.resolve("Example.java")));
         assertTrue(Files.readString(output.resolve("src/main/java/example/Example.java")).contains("Identifier"));
+        assertFalse(Files.exists(output.resolve("copilot-worktrees")));
+        assertFalse(Files.exists(output.resolve("nested-project")));
+        assertFalse(report.toText().contains("copilot-worktrees"));
         assertTrue(Files.readString(output.resolve("gradle.properties")).contains("minecraft_version=1.21.11"));
         assertTrue(Files.readString(output.resolve("settings.gradle")).contains("minecraft_version_range=[1.21.11]"));
     }

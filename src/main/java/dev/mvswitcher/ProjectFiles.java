@@ -4,6 +4,7 @@ import java.io.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
+import java.util.function.Predicate;
 import java.util.zip.*;
 
 public final class ProjectFiles {
@@ -36,7 +37,9 @@ public final class ProjectFiles {
         Files.walkFileTree(source, new SimpleFileVisitor<>() {
             @Override public FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
                 Path rel = source.relativize(dir);
-                if (excluded(rel)) return FileVisitResult.SKIP_SUBTREE;
+                if (!rel.toString().isEmpty() && (excluded(rel) || isNestedGitRepository(dir))) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
                 Files.createDirectories(target.resolve(rel));
                 return FileVisitResult.CONTINUE;
             }
@@ -62,7 +65,8 @@ public final class ProjectFiles {
         Files.walkFileTree(source, new SimpleFileVisitor<>() {
             @Override public FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
                 Path rel = source.relativize(dir);
-                if (excluded(rel) || templateOwned(rel)) return FileVisitResult.SKIP_SUBTREE;
+                if ((!rel.toString().isEmpty() && isNestedGitRepository(dir)) ||
+                        excluded(rel) || templateOwned(rel)) return FileVisitResult.SKIP_SUBTREE;
                 Files.createDirectories(target.resolve(rel));
                 return FileVisitResult.CONTINUE;
             }
@@ -82,6 +86,27 @@ public final class ProjectFiles {
                 return FileVisitResult.CONTINUE;
             }
         });
+    }
+
+    static List<Path> listProjectFiles(Path root, Predicate<Path> include) throws IOException {
+        List<Path> files = new ArrayList<>();
+        Files.walkFileTree(root, new SimpleFileVisitor<>() {
+            @Override public FileVisitResult preVisitDirectory(Path directory,
+                    java.nio.file.attribute.BasicFileAttributes attrs) {
+                Path relative = root.relativize(directory);
+                if (!relative.toString().isEmpty() &&
+                        (excluded(relative) || isNestedGitRepository(directory))) {
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override public FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) {
+                if (!excluded(root.relativize(file)) && include.test(file)) files.add(file);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        return files;
     }
 
     private static String mergeGradleProperties(String template, String source) {
@@ -128,9 +153,17 @@ public final class ProjectFiles {
     }
 
     private static boolean excluded(Path rel) {
-        if (rel.getNameCount() == 0) return false;
-        String first = rel.getName(0).toString();
-        return first.equals(".git") || first.equals(".gradle") || first.equals("build") ||
-                first.equals("converted") || first.equals(".idea");
+        for (Path segment : rel) {
+            String name = segment.toString();
+            if (name.equals(".git") || name.equals(".gradle") || name.equals("build") ||
+                    name.equals("converted") || name.equals(".idea") || name.equals("copilot-worktrees")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNestedGitRepository(Path directory) {
+        return Files.exists(directory.resolve(".git"), LinkOption.NOFOLLOW_LINKS);
     }
 }

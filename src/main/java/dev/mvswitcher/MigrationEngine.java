@@ -310,26 +310,24 @@ public final class MigrationEngine {
                 if (!Objects.equals(rule.from, edge.from) || !Objects.equals(rule.to, edge.to)) continue;
                 int replacements = 0;
                 int filesChanged = 0;
-                try (var paths = Files.walk(root)) {
-                    for (Path file : paths.filter(Files::isRegularFile).toList()) {
-                        String relative = root.relativize(file).toString().replace('\\', '/');
-                        if (!matches(rule.includes, relative)) continue;
-                        String before;
-                        try {
-                            before = Files.readString(file);
-                        } catch (IOException e) {
-                            throw new IOException("Rule " + rule.id + " could not read " + relative + ": " + e.getMessage(), e);
-                        }
-                        if (rule.skipIfContains != null && before.contains(rule.skipIfContains)) continue;
-                        Replacement result = rule.findRegex == null
-                                ? replaceLiteral(before, rule.find, rule.replace, rule.maxReplacements)
-                                : replaceRegex(before, rule.findRegex, rule.replace, rule.maxReplacements, rule.id);
-                        if (result.count > 0) {
-                            Files.writeString(file, result.text);
-                            replacements += result.count;
-                            filesChanged++;
-                            report.changed(relative + " (" + rule.id + ", " + result.count + " replacement(s))");
-                        }
+                for (Path file : ProjectFiles.listProjectFiles(root, Files::isRegularFile)) {
+                    String relative = root.relativize(file).toString().replace('\\', '/');
+                    if (!matches(rule.includes, relative)) continue;
+                    String before;
+                    try {
+                        before = Files.readString(file);
+                    } catch (IOException e) {
+                        throw new IOException("Rule " + rule.id + " could not read " + relative + ": " + e.getMessage(), e);
+                    }
+                    if (rule.skipIfContains != null && before.contains(rule.skipIfContains)) continue;
+                    Replacement result = rule.findRegex == null
+                            ? replaceLiteral(before, rule.find, rule.replace, rule.maxReplacements)
+                            : replaceRegex(before, rule.findRegex, rule.replace, rule.maxReplacements, rule.id);
+                    if (result.count > 0) {
+                        Files.writeString(file, result.text);
+                        replacements += result.count;
+                        filesChanged++;
+                        report.changed(relative + " (" + rule.id + ", " + result.count + " replacement(s))");
                     }
                 }
                 if (rule.required && replacements == 0) {
@@ -454,28 +452,25 @@ public final class MigrationEngine {
                 "gradle.properties", "settings.gradle", "settings.gradle.kts",
                 "build.gradle", "build.gradle.kts", "neoforge.mods.toml", "mods.toml"
         );
-        try (var paths = Files.walk(root)) {
-            for (Path file : paths.filter(Files::isRegularFile)
-                    .filter(path -> configNames.contains(path.getFileName().toString()))
-                    .toList()) {
-                String before = Files.readString(file);
-                Matcher matcher = range.matcher(before);
-                StringBuffer updated = new StringBuffer();
-                boolean found = false;
-                while (matcher.find()) {
-                    found = true;
-                    String replacement = matcher.group(1) + matcher.group(2) + "[" + mc + "]"
-                            + matcher.group(2) + matcher.group(3);
-                    matcher.appendReplacement(updated, Matcher.quoteReplacement(replacement));
-                }
-                if (found) {
-                    matcher.appendTail(updated);
-                    String after = updated.toString();
-                    if (!before.equals(after)) {
-                        Files.writeString(file, after);
-                        report.changed(root.relativize(file).toString().replace('\\', '/') +
-                                " (minecraft_version_range -> [" + mc + "])");
-                    }
+        for (Path file : ProjectFiles.listProjectFiles(root, path -> Files.isRegularFile(path) &&
+                configNames.contains(path.getFileName().toString()))) {
+            String before = Files.readString(file);
+            Matcher matcher = range.matcher(before);
+            StringBuffer updated = new StringBuffer();
+            boolean found = false;
+            while (matcher.find()) {
+                found = true;
+                String replacement = matcher.group(1) + matcher.group(2) + "[" + mc + "]"
+                        + matcher.group(2) + matcher.group(3);
+                matcher.appendReplacement(updated, Matcher.quoteReplacement(replacement));
+            }
+            if (found) {
+                matcher.appendTail(updated);
+                String after = updated.toString();
+                if (!before.equals(after)) {
+                    Files.writeString(file, after);
+                    report.changed(root.relativize(file).toString().replace('\\', '/') +
+                            " (minecraft_version_range -> [" + mc + "])");
                 }
             }
         }
@@ -491,13 +486,11 @@ public final class MigrationEngine {
 
     private static void validateJava(Path root, MigrationReport report) throws IOException {
         JavaParser parser = new JavaParser(new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE));
-        try (var paths = Files.walk(root)) {
-            for (Path file : paths.filter(path -> path.toString().endsWith(".java")).toList()) {
-                ParseResult<CompilationUnit> parsed = parser.parse(file);
-                if (!parsed.isSuccessful()) {
-                    report.warning("JavaParser could not fully parse " + root.relativize(file) + ": " +
-                            parsed.getProblems().stream().limit(2).map(Object::toString).toList());
-                }
+        for (Path file : ProjectFiles.listProjectFiles(root, path -> path.toString().endsWith(".java"))) {
+            ParseResult<CompilationUnit> parsed = parser.parse(file);
+            if (!parsed.isSuccessful()) {
+                report.warning("JavaParser could not fully parse " + root.relativize(file) + ": " +
+                        parsed.getProblems().stream().limit(2).map(Object::toString).toList());
             }
         }
     }
