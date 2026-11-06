@@ -4,13 +4,20 @@ import picocli.CommandLine;
 import picocli.CommandLine.*;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
+import javax.swing.*;
+import java.awt.GraphicsEnvironment;
 
 @Command(name = "mvswitcher", mixinStandardHelpOptions = true, version = "MVSwitcher 0.1.0",
         description = "Bidirectional Minecraft NeoForge mod migration CLI.",
-        subcommands = {MVSwitcher.Migrate.class, MVSwitcher.Analyze.class, MVSwitcher.Versions.class})
+        subcommands = {MVSwitcher.Migrate.class, MVSwitcher.Analyze.class, MVSwitcher.Versions.class,
+                MVSwitcher.Interface.class})
 public class MVSwitcher implements Runnable {
     public static void main(String[] args) {
         int code = new CommandLine(new MVSwitcher()).execute(args);
+        if (args.length > 0 && "interface".equals(args[0])) {
+            if (code != 0) System.exit(code);
+            return;
+        }
         System.exit(code);
     }
 
@@ -23,11 +30,12 @@ public class MVSwitcher implements Runnable {
         @Parameters(index = "0", description = "Mod project directory or ZIP file.") Path input;
         public Integer call() {
             try {
-                ProjectInfo info = ProjectAnalyzer.analyze(input);
+                ProjectInfo info = ProjectAnalyzer.analyze(input, MVSwitcher::printLog);
                 System.out.println(info.toReport());
                 return 0;
             } catch (Exception e) {
-                System.err.println("Analysis failed: " + e.getMessage());
+                printLog(new MigrationLog.Event(java.time.Instant.now(), MigrationLog.Level.ERROR,
+                        "Analysis failed: " + e.getMessage()));
                 return 2;
             }
         }
@@ -51,11 +59,12 @@ public class MVSwitcher implements Runnable {
             try {
                 MigrationOptions options = new MigrationOptions(input, from, to, neoForgeVersion,
                         javaVersion, output, rules, template, dryRun, force, skipBuild);
-                MigrationReport report = MigrationEngine.migrate(options);
+                MigrationReport report = MigrationEngine.migrate(options, MVSwitcher::printLog);
                 System.out.println(report.toText());
                 return report.hasErrors() ? 1 : 0;
             } catch (Exception e) {
-                System.err.println("Migration failed: " + e.getMessage());
+                printLog(new MigrationLog.Event(java.time.Instant.now(), MigrationLog.Level.ERROR,
+                        "Migration failed: " + e.getMessage()));
                 return 2;
             }
         }
@@ -64,6 +73,8 @@ public class MVSwitcher implements Runnable {
     @Command(name = "versions", description = "List known NeoForge migration profiles.")
     static class Versions implements Callable<Integer> {
         public Integer call() {
+            printLog(new MigrationLog.Event(java.time.Instant.now(), MigrationLog.Level.INFO,
+                    "Loading known profiles and bundled directed rule paths."));
             VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s NeoForge %-14s Java %s%n",
                     v.id(), v.minecraft(), v.neoForge() == null ? "override required" : v.neoForge(), v.javaMajor()));
             System.out.println("Unknown versions can still be targeted with --to and --neoforge-version/--java.");
@@ -76,5 +87,23 @@ public class MVSwitcher implements Runnable {
             }
             return 0;
         }
+    }
+
+    @Command(name = "interface", description = "Open the graphical interface.")
+    static class Interface implements Callable<Integer> {
+        public Integer call() {
+            if (GraphicsEnvironment.isHeadless()) {
+                System.err.println("Cannot open the graphical interface in a headless environment.");
+                return 2;
+            }
+            SwingUtilities.invokeLater(() -> new MVSwitcherInterface().show());
+            return 0;
+        }
+    }
+
+    private static void printLog(MigrationLog.Event event) {
+        java.io.PrintStream stream = event.level() == MigrationLog.Level.ERROR
+                ? System.err : System.out;
+        stream.println(event);
     }
 }
