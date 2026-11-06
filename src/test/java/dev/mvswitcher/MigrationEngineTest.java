@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.*;
+import java.util.ArrayList;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -44,6 +45,28 @@ class MigrationEngineTest {
         assertFalse(report.toText().contains("copilot-worktrees"));
         assertTrue(Files.readString(output.resolve("gradle.properties")).contains("minecraft_version=1.21.11"));
         assertTrue(Files.readString(output.resolve("settings.gradle")).contains("minecraft_version_range=[1.21.11]"));
+    }
+
+    @Test void emitsDetailedProgressEventsDuringMigration() throws Exception {
+        Path source = temp.resolve("LoggedProject");
+        Files.createDirectories(source.resolve("src/main/resources/META-INF"));
+        Files.writeString(source.resolve("build.gradle"), "plugins { id 'net.neoforged.gradle.userdev' }\n");
+        Files.writeString(source.resolve("gradle.properties"),
+                "minecraft_version=1.21.11\nneo_version=21.11.48\n");
+        Files.writeString(source.resolve("src/main/resources/META-INF/neoforge.mods.toml"), "modLoader=\"javafml\"\n");
+        List<MigrationLog.Event> events = new ArrayList<>();
+
+        MigrationReport report = MigrationEngine.migrate(new MigrationOptions(
+                source, null, "26.3", null, null, temp.resolve("logged-output"), null, null,
+                false, false, true), events::add);
+
+        assertFalse(report.hasErrors());
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("Migration started")));
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("Stage: inspect source project")));
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("Selected migration route")));
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("Applying rule edge")));
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("skipped by --skip-build")));
+        assertTrue(events.stream().anyMatch(event -> event.message().contains("Migration finished")));
     }
 
     @Test void appliesBundledDirectedApiRules() throws Exception {

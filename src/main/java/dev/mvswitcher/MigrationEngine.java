@@ -15,7 +15,25 @@ public final class MigrationEngine {
     private MigrationEngine() {}
 
     public static MigrationReport migrate(MigrationOptions o) throws IOException {
-        ProjectInfo sourceInfo = ProjectAnalyzer.analyze(o.input());
+        return migrate(o, MigrationLog.Listener.NONE);
+    }
+
+    public static MigrationReport migrate(MigrationOptions o, MigrationLog.Listener listener) throws IOException {
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Migration started.");
+        try {
+            MigrationReport report = migrateInternal(o, listener);
+            MigrationLog.log(listener, report.hasErrors() ? MigrationLog.Level.ERROR : MigrationLog.Level.SUCCESS,
+                    report.hasErrors() ? "Migration finished with errors." : "Migration finished.");
+            return report;
+        } catch (IOException | RuntimeException e) {
+            MigrationLog.log(listener, MigrationLog.Level.ERROR, "Migration aborted: " + e.getMessage());
+            throw e;
+        }
+    }
+
+    private static MigrationReport migrateInternal(MigrationOptions o, MigrationLog.Listener listener) throws IOException {
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: inspect source project.");
+        ProjectInfo sourceInfo = ProjectAnalyzer.analyze(o.input(), listener);
         if (!"NeoForge".equals(sourceInfo.loader())) {
             throw new IOException("Only NeoForge projects are supported.");
         }
@@ -23,14 +41,19 @@ public final class MigrationEngine {
         if (from == null) throw new IOException("Could not detect source Minecraft version. Supply --from.");
         if (o.to() == null || o.to().isBlank()) throw new IOException("Target version is required (--to).");
 
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Migration direction: " + from + " -> " + o.to());
         VersionProfile target = VersionCatalog.find(o.to());
         String neo = o.neoForgeVersion() != null ? o.neoForgeVersion() : target == null ? null : target.neoForge();
         int java = o.javaVersion() != null ? o.javaVersion() : target == null ? 21 : target.javaMajor();
         if (neo == null) throw new IOException("Unknown target profile. Supply --neoforge-version explicitly.");
+        MigrationLog.log(listener, MigrationLog.Level.INFO,
+                "Target configuration: Minecraft " + o.to() + ", NeoForge " + neo + ", Java " + java +
+                        (target == null ? " (explicit target profile)." : " (known profile)."));
 
         Path templateRoot = null;
         if (o.template() != null) {
-            ProjectInfo templateInfo = ProjectAnalyzer.analyze(o.template());
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: inspect target NeoForge template.");
+            ProjectInfo templateInfo = ProjectAnalyzer.analyze(o.template(), listener);
             if (!"NeoForge".equals(templateInfo.loader())) {
                 throw new IOException("--template must be a NeoForge MDK project directory or ZIP.");
             }
@@ -43,11 +66,15 @@ public final class MigrationEngine {
                         " does not match selected version " + neo + ".");
             }
             templateRoot = templateInfo.root();
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Target template is valid: " + templateRoot);
         }
 
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: load and validate directed migration rules.");
         RulePack pack = loadRules(o.rules());
         validateRules(pack);
         List<MigrationRule> route = findRoute(pack.rules, from, o.to());
+        MigrationLog.log(listener, MigrationLog.Level.INFO,
+                "Loaded " + pack.rules.size() + " rule(s); selected route contains " + route.size() + " edge(s).");
 
         MigrationReport report = new MigrationReport();
         report.versions(from, o.to());
@@ -55,7 +82,13 @@ public final class MigrationEngine {
             report.warning("No migration rules are defined from " + from + " to " + o.to() +
                     ". Build metadata can still be updated, but API compatibility is not covered.");
         } else if (!route.isEmpty()) {
-            report.info("Selected migration route: " + describeRoute(route, o.to()));
+            String description = describeRoute(route, o.to());
+            report.info("Selected migration route: " + description);
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Selected migration route: " + description);
+        } else {
+            MigrationLog.log(listener, from.equals(o.to()) ? MigrationLog.Level.INFO : MigrationLog.Level.WARN,
+                    from.equals(o.to()) ? "Source and target versions are identical; no API rules are needed."
+                            : "No API migration route is defined; only build metadata can be updated.");
         }
 
         Path sourceArgument = o.input().toAbsolutePath().normalize();
@@ -63,6 +96,7 @@ public final class MigrationEngine {
         Path out = o.output() == null
                 ? outputParent.resolve("converted").resolve(sourceInfo.projectName() + "-" + safe(o.to()))
                 : o.output().toAbsolutePath().normalize();
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Output directory: " + out);
         if (overlaps(out, sourceInfo.root())) {
             throw new IOException("Output must be outside the source project directory.");
         }
@@ -74,6 +108,7 @@ public final class MigrationEngine {
         }
 
         if (o.dryRun()) {
+            MigrationLog.log(listener, MigrationLog.Level.WARN, "Dry run selected; no project files will be written.");
             report.warning("Dry run: no files were written.");
             report.warning("Target profile: Minecraft " + o.to() + ", NeoForge " + neo + ", Java " + java);
             if (templateRoot != null) {
@@ -83,42 +118,67 @@ public final class MigrationEngine {
             }
             return report;
         }
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: prepare output directory.");
         if (Files.exists(out)) {
             if (!o.force()) throw new IOException("Output already exists: " + out + " (use --force to replace it)");
+            MigrationLog.log(listener, MigrationLog.Level.WARN, "Removing existing output because --force was specified.");
             deleteTree(out);
         }
         Files.createDirectories(out);
         report.output(out);
 
         if (templateRoot == null) {
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: copy source project into output.");
+            MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Source project file count: " +
+                    ProjectFiles.listProjectFiles(sourceInfo.root(), Files::isRegularFile).size());
             ProjectFiles.copyProject(sourceInfo.root(), out);
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Source project copy completed.");
         } else {
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: copy target template into output.");
             ProjectFiles.copyProject(templateRoot, out);
-            updateBuildFiles(out, o.to(), neo, java, report);
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Target template copied.");
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Updating template build metadata.");
+            updateBuildFiles(out, o.to(), neo, java, report, listener);
             if (o.skipBuild()) {
                 report.templateBuild("SKIPPED", List.of());
                 report.warning("Gradle builds skipped by --skip-build (both template and migrated-project builds).");
+                MigrationLog.log(listener, MigrationLog.Level.WARN, "Template build skipped by --skip-build.");
             } else {
-                BuildRunner.Result templateBuild = BuildRunner.run(out);
+                MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: build clean target NeoForge template.");
+                BuildRunner.Result templateBuild = BuildRunner.run(out, listener);
                 report.templateBuild(templateBuild.success() ? "SUCCESS" : templateBuild.started() ? "FAILED" : "NOT RUN",
                         templateBuild.output());
                 if (!templateBuild.success()) {
                     report.error("Target NeoForge template build failed before source files were transferred.");
+                    MigrationLog.log(listener, MigrationLog.Level.ERROR,
+                            "Template build failed; source files were not overlaid.");
                     return report;
                 }
             }
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: transfer mod files onto the target template.");
+            MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Source project file count: " +
+                    ProjectFiles.listProjectFiles(sourceInfo.root(), Files::isRegularFile).size());
             ProjectFiles.overlayProject(sourceInfo.root(), out);
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Mod files transferred onto the target template.");
         }
 
-        applyRules(out, from, o.to(), pack, route, report);
-        updateBuildFiles(out, o.to(), neo, java, report);
-        validateJava(out, report);
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: apply migration rules and update build metadata.");
+        applyRules(out, from, o.to(), pack, route, report, listener);
+        updateBuildFiles(out, o.to(), neo, java, report, listener);
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Checking Java source syntax.");
+        validateJava(out, report, listener);
         if (o.skipBuild()) {
             if (templateRoot == null) report.warning("Gradle build skipped by --skip-build.");
+            MigrationLog.log(listener, MigrationLog.Level.WARN, "Final Gradle build skipped by --skip-build.");
         } else {
-            BuildRunner.Result build = BuildRunner.run(out);
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: build migrated project.");
+            BuildRunner.Result build = BuildRunner.run(out, listener);
             report.build(build.success() ? "SUCCESS" : build.started() ? "FAILED" : "NOT RUN", build.output());
-            if (!build.success()) report.error("Target Gradle build did not pass. Review the build output and unresolved API changes.");
+            if (!build.success()) {
+                report.error("Target Gradle build did not pass. Review the build output and unresolved API changes.");
+                MigrationLog.log(listener, MigrationLog.Level.ERROR,
+                        "Target Gradle build failed. Review the preceding Gradle output and unresolved API changes.");
+            }
         }
         return report;
     }
@@ -303,11 +363,22 @@ public final class MigrationEngine {
     }
 
     private static void applyRules(Path root, String from, String to, RulePack pack,
-                                   List<MigrationRule> route, MigrationReport report) throws IOException {
-        if (from.equals(to)) return;
+                                   List<MigrationRule> route, MigrationReport report,
+                                   MigrationLog.Listener listener) throws IOException {
+        if (from.equals(to)) {
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "No API rule application required.");
+            return;
+        }
+        if (route.isEmpty()) {
+            MigrationLog.log(listener, MigrationLog.Level.WARN, "No migration rules to apply for this direction.");
+            return;
+        }
         for (MigrationRule edge : route) {
+            MigrationLog.log(listener, MigrationLog.Level.INFO, "Applying rule edge " + edge.from + " -> " + edge.to);
             for (MigrationRule rule : pack.rules) {
                 if (!Objects.equals(rule.from, edge.from) || !Objects.equals(rule.to, edge.to)) continue;
+                MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Checking rule " + rule.id +
+                        " against " + rule.includes);
                 int replacements = 0;
                 int filesChanged = 0;
                 for (Path file : ProjectFiles.listProjectFiles(root, Files::isRegularFile)) {
@@ -331,11 +402,16 @@ public final class MigrationEngine {
                     }
                 }
                 if (rule.required && replacements == 0) {
+                    MigrationLog.log(listener, MigrationLog.Level.ERROR,
+                            "Required migration rule " + rule.id + " did not match any files.");
                     throw new IOException("Required migration rule " + rule.id + " did not match any files.");
                 }
                 report.ruleResult(rule.id + ": " + replacements + " replacement(s) in " + filesChanged + " file(s)");
+                MigrationLog.log(listener, replacements == 0 ? MigrationLog.Level.DEBUG : MigrationLog.Level.SUCCESS,
+                        "Rule " + rule.id + ": " + replacements + " replacement(s) in " + filesChanged + " file(s).");
             }
         }
+        MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Migration rule application completed.");
     }
 
     static List<MigrationRule> findRoute(List<MigrationRule> rules, String from, String to) {
@@ -428,7 +504,8 @@ public final class MigrationEngine {
 
     private record Replacement(String text, int count) {}
 
-    private static void updateBuildFiles(Path root, String mc, String neo, int java, MigrationReport report) throws IOException {
+    private static void updateBuildFiles(Path root, String mc, String neo, int java, MigrationReport report,
+                                         MigrationLog.Listener listener) throws IOException {
         Path props = root.resolve("gradle.properties");
         if (Files.isRegularFile(props)) {
             String s = Files.readString(props);
@@ -437,8 +514,13 @@ public final class MigrationEngine {
             s = setProperty(s, "java_version", Integer.toString(java));
             Files.writeString(props, s);
             report.changed("gradle.properties (target versions)");
-        } else report.warning("gradle.properties not found; target versions were not written there.");
-        updateMinecraftVersionRanges(root, mc, report);
+            MigrationLog.log(listener, MigrationLog.Level.SUCCESS,
+                    "Updated gradle.properties: Minecraft " + mc + ", NeoForge " + neo + ", Java " + java + ".");
+        } else {
+            report.warning("gradle.properties not found; target versions were not written there.");
+            MigrationLog.log(listener, MigrationLog.Level.WARN, "gradle.properties not found.");
+        }
+        updateMinecraftVersionRanges(root, mc, report, listener);
     }
 
     /**
@@ -446,7 +528,8 @@ public final class MigrationEngine {
      * target version. MDKs may place this property in settings.gradle,
      * gradle.properties, or another Gradle/TOML configuration file.
      */
-    private static void updateMinecraftVersionRanges(Path root, String mc, MigrationReport report) throws IOException {
+    private static void updateMinecraftVersionRanges(Path root, String mc, MigrationReport report,
+                                                     MigrationLog.Listener listener) throws IOException {
         Pattern range = Pattern.compile("(?m)^(\\s*minecraft_version_range\\s*=\\s*)([\"']?)\\[[^\\r\\n]*\\]\\2(\\s*(?:#.*)?)$");
         List<String> configNames = List.of(
                 "gradle.properties", "settings.gradle", "settings.gradle.kts",
@@ -471,6 +554,8 @@ public final class MigrationEngine {
                     Files.writeString(file, after);
                     report.changed(root.relativize(file).toString().replace('\\', '/') +
                             " (minecraft_version_range -> [" + mc + "])");
+                    MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Updated Minecraft version range in " +
+                            root.relativize(file).toString().replace('\\', '/'));
                 }
             }
         }
@@ -484,15 +569,24 @@ public final class MigrationEngine {
         return source + (source.endsWith("\n") || source.isEmpty() ? "" : "\n") + key + "=" + value + "\n";
     }
 
-    private static void validateJava(Path root, MigrationReport report) throws IOException {
+    private static void validateJava(Path root, MigrationReport report, MigrationLog.Listener listener) throws IOException {
         JavaParser parser = new JavaParser(new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE));
-        for (Path file : ProjectFiles.listProjectFiles(root, path -> path.toString().endsWith(".java"))) {
+        List<Path> javaFiles = ProjectFiles.listProjectFiles(root, path -> path.toString().endsWith(".java"));
+        MigrationLog.log(listener, MigrationLog.Level.INFO, "Parsing " + javaFiles.size() + " Java source file(s).");
+        int problemFiles = 0;
+        for (Path file : javaFiles) {
             ParseResult<CompilationUnit> parsed = parser.parse(file);
             if (!parsed.isSuccessful()) {
-                report.warning("JavaParser could not fully parse " + root.relativize(file) + ": " +
-                        parsed.getProblems().stream().limit(2).map(Object::toString).toList());
+                problemFiles++;
+                String warning = "JavaParser could not fully parse " + root.relativize(file) + ": " +
+                        parsed.getProblems().stream().limit(2).map(Object::toString).toList();
+                report.warning(warning);
+                MigrationLog.log(listener, MigrationLog.Level.WARN, warning);
             }
         }
+        MigrationLog.log(listener, problemFiles == 0 ? MigrationLog.Level.SUCCESS : MigrationLog.Level.WARN,
+                "Java syntax validation completed: " + (javaFiles.size() - problemFiles) + "/" +
+                        javaFiles.size() + " file(s) parsed without reported syntax errors.");
     }
 
     public static class RulePack { public List<MigrationRule> rules = new ArrayList<>(); }
