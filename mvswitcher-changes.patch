@@ -1,0 +1,2253 @@
+From 7a292d48f3c77112ab7028b8268a875082a26746 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 13:13:30 +0300
+Subject: [PATCH 1/4] Move version catalog to JSON and extend rule format
+
+- Load known version profiles from versions/index.json instead of code,
+  and add a loader field to VersionProfile.
+- Add optional loader, type and message fields to rules; rules are now
+  routed and applied per loader.
+- Add warn rules that report matches in the migration report without
+  changing files.
+- Add RuleFormatTest and document the new fields in the README.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017cjHkPet6EQbigJBGtkEKc
+---
+ README.md                                     |  30 +++++
+ .../java/dev/mvswitcher/MigrationEngine.java  |  74 ++++++++++-
+ .../java/dev/mvswitcher/VersionCatalog.java   |  69 +++++++++-
+ .../java/dev/mvswitcher/VersionProfile.java   |  16 ++-
+ src/main/resources/versions/index.json        |   6 +
+ .../java/dev/mvswitcher/RuleFormatTest.java   | 124 ++++++++++++++++++
+ 6 files changed, 306 insertions(+), 13 deletions(-)
+ create mode 100644 src/main/resources/versions/index.json
+ create mode 100644 src/test/java/dev/mvswitcher/RuleFormatTest.java
+
+diff --git a/README.md b/README.md
+index e66fd8a..fe6be19 100644
+--- a/README.md
++++ b/README.md
+@@ -76,6 +76,18 @@ mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --neoforge-version 26.3.0.99
+ 
+ При копировании пропускаются каталоги `.git`, `.gradle`, `build`, `converted`, `.idea` и `copilot-worktrees` на любой глубине; также не копируются вложенные Git-репозитории. Это предотвращает попадание рабочих деревьев и сгенерированных исходников в проект переноса.
+ 
++## Каталог версий
++
++Известные профили (версия Minecraft, загрузчик, версия загрузчика, Java) хранятся данными в `src/main/resources/versions/index.json`, а не в Java-коде:
++
++```json
++{ "profiles": [
++  { "id": "1.21.11", "minecraft": "1.21.11", "loader": "neoforge", "loaderVersion": "21.11.48", "java": 21 }
++] }
++```
++
++Чтобы добавить версию, достаточно дописать запись в этот файл. `id` по умолчанию равен `minecraft`, `loaderVersion` можно опустить, тогда его нужно передавать явно.
++
+ ## Структура и формат правил
+ 
+ Встроенные направленные правила хранятся по пути:
+@@ -118,6 +130,24 @@ src/main/resources/rules/
+ - `skipIfContains` — необязательная защита: если файл уже содержит эту строку, данное правило пропускает весь файл; полезно для повторного запуска миграции.
+ - `required` — необязательный флаг. Если он равен `true`, отсутствие замены по правилу останавливает миграцию с ошибкой. По умолчанию правило может не найти совпадений, что нормально для модов, не использующих соответствующий API.
+ 
++- `loader` — необязательное имя загрузчика (`neoforge`, `forge`, `fabric`, `quilt`). По умолчанию `neoforge`. Маршрут и применение правил учитывают только правила загрузчика проекта. `id` правил должен быть уникален во всём наборе, независимо от загрузчика.
++- `type` — необязательный тип правила: `text` (по умолчанию, меняет файлы) или `warn` (файлы не меняет, только добавляет предупреждение в отчёт).
++- `message` — обязательный текст предупреждения для `type: "warn"`. Для таких правил поле `replace` задавать нельзя. Используйте их там, где автоматическая замена небезопасна (смена логики, а не имени), чтобы инструмент указывал файл и количество совпадений, а не молчал.
++
++Пример предупреждающего правила:
++
++```json
++{
++  "id": "legacy-call-warning",
++  "from": "1.21.11",
++  "to": "26.3",
++  "type": "warn",
++  "includes": ["**/*.java"],
++  "find": "legacyCall(",
++  "message": "legacyCall удалён, перепишите вызов вручную."
++}
++```
++
+ Правила в `rules.json` выполняются сверху вниз. Маршрут между несколькими версиями выбирается поиском кратчайшего пути, при равной длине учитывается порядок рёбер в загруженном наборе. Каждый шаг направленный: обратное правило нужно описать отдельно, а также проверить по API целевой версии.
+ 
+ Функции меняются тем же буквальным механизмом: сузьте `includes` до нужного файла, задайте старую сигнатуру или тело в `find`, а новую — в `replace`. Для многострочного фрагмента используйте `\n` в JSON. Например, правило может заменить `protected int oldSignal(BlockState state) {` на `protected int getSignal(BlockState state, Direction direction) {`. Это намеренно явная текстовая замена, а не автоматическое понимание AST: перед запуском проверьте, что фрагмент достаточно уникален, задав `maxReplacements`.
+diff --git a/src/main/java/dev/mvswitcher/MigrationEngine.java b/src/main/java/dev/mvswitcher/MigrationEngine.java
+index 34042e8..081e93b 100644
+--- a/src/main/java/dev/mvswitcher/MigrationEngine.java
++++ b/src/main/java/dev/mvswitcher/MigrationEngine.java
+@@ -72,7 +72,8 @@ public final class MigrationEngine {
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: load and validate directed migration rules.");
+         RulePack pack = loadRules(o.rules());
+         validateRules(pack);
+-        List<MigrationRule> route = findRoute(pack.rules, from, o.to());
++        String loader = sourceInfo.loader().toLowerCase(Locale.ROOT);
++        List<MigrationRule> route = findRoute(pack.rules, from, o.to(), loader);
+         MigrationLog.log(listener, MigrationLog.Level.INFO,
+                 "Loaded " + pack.rules.size() + " rule(s); selected route contains " + route.size() + " edge(s).");
+ 
+@@ -163,7 +164,7 @@ public final class MigrationEngine {
+         }
+ 
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: apply migration rules and update build metadata.");
+-        applyRules(out, from, o.to(), pack, route, report, listener);
++        applyRules(out, from, o.to(), loader, pack, route, report, listener);
+         updateBuildFiles(out, o.to(), neo, java, report, listener);
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Checking Java source syntax.");
+         validateJava(out, report, listener);
+@@ -330,13 +331,24 @@ public final class MigrationEngine {
+                 throw new IOException("Rule " + rule.id + " must have valid 'from' and 'to' versions.");
+             }
+             if (rule.from.equals(rule.to)) throw new IOException("Rule " + rule.id + " has the same source and target version.");
++            if (rule.type != null && !rule.type.equals("text") && !rule.type.equals("warn")) {
++                throw new IOException("Rule " + rule.id + " has unknown 'type' " + rule.type + " (expected 'text' or 'warn').");
++            }
++            if (rule.loader != null && !rule.loader.matches("[A-Za-z0-9_-]+")) {
++                throw new IOException("Rule " + rule.id + " has an invalid 'loader': " + rule.loader);
++            }
+             boolean hasLiteralFind = rule.find != null && !rule.find.isEmpty();
+             boolean hasRegexFind = rule.findRegex != null && !rule.findRegex.isEmpty();
+             if (hasLiteralFind == hasRegexFind) {
+                 throw new IOException("Rule " + rule.id + " must set exactly one non-empty 'find' or 'findRegex' value.");
+             }
+-            if (rule.replace == null) throw new IOException("Rule " + rule.id + " must have a 'replace' string (use an empty string to delete text).");
+-            if (hasLiteralFind && rule.find.equals(rule.replace)) throw new IOException("Rule " + rule.id + " is a no-op: 'find' and 'replace' are identical.");
++            if (rule.warnOnly()) {
++                if (blank(rule.message)) throw new IOException("Warning rule " + rule.id + " must have a non-empty 'message'.");
++                if (rule.replace != null) throw new IOException("Warning rule " + rule.id + " must not set 'replace'; it never changes files.");
++            } else {
++                if (rule.replace == null) throw new IOException("Rule " + rule.id + " must have a 'replace' string (use an empty string to delete text).");
++                if (hasLiteralFind && rule.find.equals(rule.replace)) throw new IOException("Rule " + rule.id + " is a no-op: 'find' and 'replace' are identical.");
++            }
+             if (hasRegexFind) {
+                 try {
+                     Pattern.compile(rule.findRegex);
+@@ -362,7 +374,7 @@ public final class MigrationEngine {
+         return version != null && version.matches("[A-Za-z0-9.+_-]+");
+     }
+ 
+-    private static void applyRules(Path root, String from, String to, RulePack pack,
++    private static void applyRules(Path root, String from, String to, String loader, RulePack pack,
+                                    List<MigrationRule> route, MigrationReport report,
+                                    MigrationLog.Listener listener) throws IOException {
+         if (from.equals(to)) {
+@@ -377,6 +389,7 @@ public final class MigrationEngine {
+             MigrationLog.log(listener, MigrationLog.Level.INFO, "Applying rule edge " + edge.from + " -> " + edge.to);
+             for (MigrationRule rule : pack.rules) {
+                 if (!Objects.equals(rule.from, edge.from) || !Objects.equals(rule.to, edge.to)) continue;
++                if (!rule.loaderOrDefault().equals(loader)) continue;
+                 MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Checking rule " + rule.id +
+                         " against " + rule.includes);
+                 int replacements = 0;
+@@ -391,6 +404,17 @@ public final class MigrationEngine {
+                         throw new IOException("Rule " + rule.id + " could not read " + relative + ": " + e.getMessage(), e);
+                     }
+                     if (rule.skipIfContains != null && before.contains(rule.skipIfContains)) continue;
++                    if (rule.warnOnly()) {
++                        int found = countMatches(before, rule);
++                        if (found > 0) {
++                            replacements += found;
++                            filesChanged++;
++                            String warning = relative + ": " + rule.message + " [" + rule.id + ", " + found + " match(es)]";
++                            report.warning(warning);
++                            MigrationLog.log(listener, MigrationLog.Level.WARN, warning);
++                        }
++                        continue;
++                    }
+                     Replacement result = rule.findRegex == null
+                             ? replaceLiteral(before, rule.find, rule.replace, rule.maxReplacements)
+                             : replaceRegex(before, rule.findRegex, rule.replace, rule.maxReplacements, rule.id);
+@@ -406,15 +430,39 @@ public final class MigrationEngine {
+                             "Required migration rule " + rule.id + " did not match any files.");
+                     throw new IOException("Required migration rule " + rule.id + " did not match any files.");
+                 }
+-                report.ruleResult(rule.id + ": " + replacements + " replacement(s) in " + filesChanged + " file(s)");
++                String unit = rule.warnOnly() ? "warning(s)" : "replacement(s)";
++                report.ruleResult(rule.id + ": " + replacements + " " + unit + " in " + filesChanged + " file(s)");
+                 MigrationLog.log(listener, replacements == 0 ? MigrationLog.Level.DEBUG : MigrationLog.Level.SUCCESS,
+-                        "Rule " + rule.id + ": " + replacements + " replacement(s) in " + filesChanged + " file(s).");
++                        "Rule " + rule.id + ": " + replacements + " " + unit + " in " + filesChanged + " file(s).");
+             }
+         }
+         MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Migration rule application completed.");
+     }
+ 
++    private static int countMatches(String source, MigrationRule rule) {
++        int count = 0;
++        if (rule.findRegex == null) {
++            int cursor = 0;
++            int match;
++            while ((match = source.indexOf(rule.find, cursor)) >= 0) {
++                count++;
++                cursor = match + rule.find.length();
++            }
++        } else {
++            Matcher matcher = Pattern.compile(rule.findRegex).matcher(source);
++            while (matcher.find()) count++;
++        }
++        return count;
++    }
++
+     static List<MigrationRule> findRoute(List<MigrationRule> rules, String from, String to) {
++        return findRoute(rules, from, to, null);
++    }
++
++    /** Shortest route between two versions; when {@code loader} is set, only that loader's rules are used. */
++    static List<MigrationRule> findRoute(List<MigrationRule> allRules, String from, String to, String loader) {
++        List<MigrationRule> rules = loader == null ? allRules
++                : allRules.stream().filter(r -> r.loaderOrDefault().equals(loader)).toList();
+         if (Objects.equals(from, to)) return List.of();
+         record Step(String version, List<MigrationRule> path) {}
+         Queue<Step> queue = new ArrayDeque<>();
+@@ -593,8 +641,20 @@ public final class MigrationEngine {
+     public static class RuleIndex { public List<String> files = new ArrayList<>(); }
+     public static class MigrationRule {
+         public String id, from, to, find, findRegex, replace, skipIfContains;
++        /** Loader this rule applies to; defaults to {@code neoforge} when omitted. */
++        public String loader;
++        /** {@code text} (default) rewrites files; {@code warn} only reports matches using {@link #message}. */
++        public String type;
++        /** Explanation shown in the report for {@code warn} rules. */
++        public String message;
+         public List<String> includes = new ArrayList<>();
+         public Integer maxReplacements;
+         public boolean required;
++
++        String loaderOrDefault() {
++            return loader == null || loader.isBlank() ? "neoforge" : loader.toLowerCase(Locale.ROOT);
++        }
++
++        boolean warnOnly() { return "warn".equals(type); }
+     }
+ }
+diff --git a/src/main/java/dev/mvswitcher/VersionCatalog.java b/src/main/java/dev/mvswitcher/VersionCatalog.java
+index 35ef99c..7977835 100644
+--- a/src/main/java/dev/mvswitcher/VersionCatalog.java
++++ b/src/main/java/dev/mvswitcher/VersionCatalog.java
+@@ -1,15 +1,74 @@
+ package dev.mvswitcher;
+ 
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.UncheckedIOException;
+ import java.util.*;
+ 
++/**
++ * Known version profiles. They are data, not code: adding a version means adding an entry to
++ * {@code src/main/resources/versions/index.json}.
++ */
+ public final class VersionCatalog {
+-    private static final List<VersionProfile> PROFILES = List.of(
+-            new VersionProfile("1.21.11", "1.21.11", "21.11.48", 21),
+-            new VersionProfile("26.3", "26.3", "26.3.0.99", 25)
+-    );
++    private static final String RESOURCE = "/versions/index.json";
++    private static final List<VersionProfile> PROFILES = load();
++
+     private VersionCatalog() {}
++
+     public static List<VersionProfile> all() { return PROFILES; }
++
++    /** First profile whose Minecraft version or id matches. */
+     public static VersionProfile find(String version) {
+-        return PROFILES.stream().filter(p -> p.minecraft().equals(version) || p.id().equals(version)).findFirst().orElse(null);
++        return PROFILES.stream()
++                .filter(p -> p.minecraft().equals(version) || p.id().equals(version))
++                .findFirst().orElse(null);
++    }
++
++    /** Profile for a specific loader, matched by Minecraft version or id. */
++    public static VersionProfile find(String version, String loader) {
++        return PROFILES.stream()
++                .filter(p -> p.loader().equalsIgnoreCase(loader))
++                .filter(p -> p.minecraft().equals(version) || p.id().equals(version))
++                .findFirst().orElse(null);
++    }
++
++    static List<VersionProfile> parse(InputStream input, String label) throws IOException {
++        JsonNode root = new ObjectMapper().readTree(input);
++        if (root == null || !root.isObject() || !root.path("profiles").isArray()) {
++            throw new IOException("Version catalog must contain a 'profiles' array: " + label);
++        }
++        List<VersionProfile> result = new ArrayList<>();
++        Set<String> keys = new HashSet<>();
++        for (JsonNode node : root.get("profiles")) {
++            String minecraft = text(node, "minecraft", label);
++            String loader = text(node, "loader", label).toLowerCase(Locale.ROOT);
++            String id = node.hasNonNull("id") ? node.get("id").asText() : minecraft;
++            String loaderVersion = node.hasNonNull("loaderVersion") ? node.get("loaderVersion").asText() : null;
++            if (!node.path("java").isInt() || node.get("java").asInt() < 1) {
++                throw new IOException("Profile " + id + " must set a positive integer 'java': " + label);
++            }
++            if (!keys.add(loader + ":" + id)) {
++                throw new IOException("Duplicate profile " + id + " for loader " + loader + ": " + label);
++            }
++            result.add(new VersionProfile(id, minecraft, loader, loaderVersion, node.get("java").asInt()));
++        }
++        return List.copyOf(result);
++    }
++
++    private static String text(JsonNode node, String field, String label) throws IOException {
++        String value = node.path(field).asText("");
++        if (value.isBlank()) throw new IOException("Every profile must set '" + field + "': " + label);
++        return value;
++    }
++
++    private static List<VersionProfile> load() {
++        try (InputStream input = VersionCatalog.class.getResourceAsStream(RESOURCE)) {
++            if (input == null) throw new IOException("Bundled version catalog is missing: " + RESOURCE);
++            return parse(input, RESOURCE);
++        } catch (IOException e) {
++            throw new UncheckedIOException("Could not load version catalog: " + e.getMessage(), e);
++        }
+     }
+ }
+diff --git a/src/main/java/dev/mvswitcher/VersionProfile.java b/src/main/java/dev/mvswitcher/VersionProfile.java
+index d45b25f..304f332 100644
+--- a/src/main/java/dev/mvswitcher/VersionProfile.java
++++ b/src/main/java/dev/mvswitcher/VersionProfile.java
+@@ -1,3 +1,17 @@
+ package dev.mvswitcher;
+ 
+-public record VersionProfile(String id, String minecraft, String neoForge, int javaMajor) {}
++/**
++ * A known Minecraft + mod loader combination.
++ *
++ * @param id            profile identifier shown to the user (usually the Minecraft version)
++ * @param minecraft     Minecraft version
++ * @param loader        lower-case loader name, for example {@code neoforge}, {@code forge}, {@code fabric}, {@code quilt}
++ * @param loaderVersion loader version for this Minecraft version, or null if it must be supplied explicitly
++ * @param javaMajor     Java major version required to build for this profile
++ */
++public record VersionProfile(String id, String minecraft, String loader, String loaderVersion, int javaMajor) {
++    /** NeoForge version of this profile, or null when the profile belongs to another loader. */
++    public String neoForge() {
++        return "neoforge".equals(loader) ? loaderVersion : null;
++    }
++}
+diff --git a/src/main/resources/versions/index.json b/src/main/resources/versions/index.json
+new file mode 100644
+index 0000000..edf86ac
+--- /dev/null
++++ b/src/main/resources/versions/index.json
+@@ -0,0 +1,6 @@
++{
++  "profiles": [
++    { "id": "1.21.11", "minecraft": "1.21.11", "loader": "neoforge", "loaderVersion": "21.11.48", "java": 21 },
++    { "id": "26.3",    "minecraft": "26.3",    "loader": "neoforge", "loaderVersion": "26.3.0.99", "java": 25 }
++  ]
++}
+diff --git a/src/test/java/dev/mvswitcher/RuleFormatTest.java b/src/test/java/dev/mvswitcher/RuleFormatTest.java
+new file mode 100644
+index 0000000..9e08543
+--- /dev/null
++++ b/src/test/java/dev/mvswitcher/RuleFormatTest.java
+@@ -0,0 +1,124 @@
++package dev.mvswitcher;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.io.ByteArrayInputStream;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.*;
++import java.util.List;
++import static org.junit.jupiter.api.Assertions.*;
++
++class RuleFormatTest {
++    @TempDir Path temp;
++
++    private MigrationEngine.MigrationRule rule(String id, String from, String to, String loader) {
++        var rule = new MigrationEngine.MigrationRule();
++        rule.id = id;
++        rule.from = from;
++        rule.to = to;
++        rule.loader = loader;
++        rule.find = "old";
++        rule.replace = "new";
++        return rule;
++    }
++
++    private Path project(String javaSource) throws IOException {
++        Path source = temp.resolve("Project");
++        Files.createDirectories(source.resolve("src/main/resources/META-INF"));
++        Files.createDirectories(source.resolve("src/main/java/example"));
++        Files.writeString(source.resolve("build.gradle"), "plugins { id 'net.neoforged.gradle.userdev' }\n");
++        Files.writeString(source.resolve("gradle.properties"), "minecraft_version=1.21.11\nneo_version=21.11.48\n");
++        Files.writeString(source.resolve("src/main/resources/META-INF/neoforge.mods.toml"), "modLoader=\"javafml\"\n");
++        Files.writeString(source.resolve("src/main/java/example/Thing.java"), javaSource);
++        return source;
++    }
++
++    @Test void catalogIsLoadedFromJsonAndKeepsOrder() {
++        List<VersionProfile> all = VersionCatalog.all();
++        assertEquals("1.21.11", all.get(0).id());
++        assertEquals("26.3", all.get(all.size() - 1).id());
++        VersionProfile profile = VersionCatalog.find("26.3", "neoforge");
++        assertNotNull(profile);
++        assertEquals("26.3.0.99", profile.neoForge());
++        assertEquals(25, profile.javaMajor());
++        assertNull(VersionCatalog.find("26.3", "fabric"));
++    }
++
++    @Test void catalogRejectsProfilesWithoutJavaVersion() {
++        String json = "{\"profiles\":[{\"minecraft\":\"1.20.1\",\"loader\":\"forge\"}]}";
++        assertThrows(IOException.class, () -> VersionCatalog.parse(
++                new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)), "test"));
++    }
++
++    @Test void nonNeoForgeProfileHasNoNeoForgeVersion() throws Exception {
++        String json = "{\"profiles\":[{\"minecraft\":\"1.20.1\",\"loader\":\"forge\",\"loaderVersion\":\"47.3.0\",\"java\":17}]}";
++        VersionProfile profile = VersionCatalog.parse(
++                new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)), "test").get(0);
++        assertEquals("forge", profile.loader());
++        assertEquals("47.3.0", profile.loaderVersion());
++        assertNull(profile.neoForge());
++    }
++
++    @Test void routeOnlyUsesRulesOfTheRequestedLoader() {
++        var rules = List.of(
++                rule("neo-a", "1.20.1", "1.21.1", null),
++                rule("fabric-a", "1.20.1", "1.21.1", "fabric"),
++                rule("fabric-b", "1.21.1", "1.21.11", "fabric"));
++        assertEquals(1, MigrationEngine.findRoute(rules, "1.20.1", "1.21.1", "neoforge").size());
++        assertTrue(MigrationEngine.findRoute(rules, "1.20.1", "1.21.11", "neoforge").isEmpty());
++        assertEquals(2, MigrationEngine.findRoute(rules, "1.20.1", "1.21.11", "fabric").size());
++    }
++
++    @Test void warningRuleReportsMatchesWithoutChangingFiles() throws Exception {
++        Path source = project("class Thing { void run() { legacyCall(); legacyCall(); } }");
++        Path rulesFile = temp.resolve("warn-rules.json");
++        Files.writeString(rulesFile, """
++                {
++                  "rules": [{
++                    "id": "legacy-call-warning",
++                    "from": "1.21.11",
++                    "to": "26.3",
++                    "type": "warn",
++                    "includes": ["**/*.java"],
++                    "find": "legacyCall()",
++                    "message": "legacyCall was removed; port it manually."
++                  }]
++                }
++                """);
++        Path output = temp.resolve("migrated");
++
++        var report = MigrationEngine.migrate(new MigrationOptions(
++                source, "1.21.11", "26.3", null, null, output, rulesFile, null, false, false, true));
++
++        assertFalse(report.hasErrors());
++        assertTrue(Files.readString(output.resolve("src/main/java/example/Thing.java")).contains("legacyCall();"));
++        String text = report.toText();
++        assertTrue(text.contains("legacyCall was removed; port it manually."));
++        assertTrue(text.contains("legacy-call-warning: 2 warning(s) in 1 file(s)"));
++    }
++
++    @Test void invalidWarningAndTypeRulesAreRejected() throws Exception {
++        Path noMessage = temp.resolve("no-message.json");
++        Files.writeString(noMessage, """
++                {"rules":[{"id":"w","from":"1.21.11","to":"26.3","type":"warn",
++                  "includes":["**/*.java"],"find":"x"}]}
++                """);
++        Path withReplace = temp.resolve("with-replace.json");
++        Files.writeString(withReplace, """
++                {"rules":[{"id":"w","from":"1.21.11","to":"26.3","type":"warn","message":"m",
++                  "includes":["**/*.java"],"find":"x","replace":"y"}]}
++                """);
++        Path badType = temp.resolve("bad-type.json");
++        Files.writeString(badType, """
++                {"rules":[{"id":"w","from":"1.21.11","to":"26.3","type":"magic",
++                  "includes":["**/*.java"],"find":"x","replace":"y"}]}
++                """);
++        Path source = project("class Thing {}");
++        for (Path rules : List.of(noMessage, withReplace, badType)) {
++            assertThrows(IOException.class, () -> MigrationEngine.migrate(new MigrationOptions(
++                    source, "1.21.11", "26.3", null, null, temp.resolve("out-" + rules.getFileName()),
++                    rules, null, false, false, true)), rules.getFileName().toString());
++        }
++    }
++}
+-- 
+2.43.0
+
+
+From c00416692a32cacc892d8096de70517a588afa2a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 13:34:33 +0300
+Subject: [PATCH 2/4] Add API diff generator for candidate migration rules
+
+ApiDiffGenerator compares the public API of two source trees and writes
+candidate rules in the rules.json format: class moves and renames as text
+rules, method renames as warn rules (or text rules with
+--auto-replace-methods), and removed classes in notes.txt (or as warn
+rules with --include-removed).
+
+Add tests that run the generated rules through the migration engine and
+document the tool in the README.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017cjHkPet6EQbigJBGtkEKc
+---
+ README.md                                     |  20 +
+ .../mvswitcher/tools/ApiDiffGenerator.java    | 394 ++++++++++++++++++
+ .../tools/ApiDiffGeneratorTest.java           |  96 +++++
+ 3 files changed, 510 insertions(+)
+ create mode 100644 src/main/java/dev/mvswitcher/tools/ApiDiffGenerator.java
+ create mode 100644 src/test/java/dev/mvswitcher/tools/ApiDiffGeneratorTest.java
+
+diff --git a/README.md b/README.md
+index fe6be19..c23fc37 100644
+--- a/README.md
++++ b/README.md
+@@ -162,6 +162,26 @@ mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --rules ./my-migration-rules
+ 
+ Каталог правил дополняет встроенные правила; правило с уже существующим `id` заменяет встроенное правило с этим ID, остальные правила добавляются. При передаче `--rules path/to/rules.json` загружается самостоятельный набор правил без встроенных. Проверьте конфигурацию сначала через `--dry-run`, затем изучите секции `Rule applications`, `Warnings`, `Errors` и вывод Gradle в отчёте. Правило, которому нечего заменить, показывает ноль совпадений; `required: true` превращает это в явную ошибку.
+ 
++## Генератор правил из диффа API
++
++Чтобы не искать изменения API вручную, сравните исходники двух соседних версий Minecraft (например, декомпилированные исходники из Gradle-кэша MDK для каждой версии) отдельным инструментом:
++
++```shell
++java -cp "build/install/mvswitcher/lib/*" dev.mvswitcher.tools.ApiDiffGenerator \
++  --old ./sources-1.21.11 --new ./sources-26.3 --from 1.21.11 --to 26.3 --out ./generated-rules
++```
++
++Результат — `generated-rules/1.21.11/26.3/rules.json` (в формате правил выше, его можно передать через `--rules ./generated-rules`) и `notes.txt` со всем, что не удалось превратить в правило.
++
++Что определяется:
++
++- перенос класса в другой пакет при том же простом имени — правило `text`;
++- переименование класса (почти совпадающий набор методов, взаимно лучшее совпадение) — два правила `text`: полное имя и простое имя. Проверяйте их по `notes.txt`;
++- переименование метода с той же сигнатурой в том же классе — правило `warn` (замена по одному имени не знает тип получателя). С флагом `--auto-replace-methods` однозначные переименования, где старого имени нет в новом API вообще, превращаются в `text`;
++- удалённые классы попадают в `notes.txt`; с флагом `--include-removed` для них добавляются правила `warn` по строке `import`. Таких правил может быть очень много, а движок проходит все файлы для каждого правила, поэтому по умолчанию они выключены.
++
++Это кандидаты на правила, а не готовая миграция: изменения полей, смена порядка аргументов и логики не определяются. Переименование метода после переименования класса сопоставляется по новым именам типов, но сложные цепочки изменений проверяйте вручную. Генератор проверен на синтетических деревьях исходников; на реальных исходниках Minecraft его ещё не запускали.
++
+ ## Ограничения
+ 
+ - Поддерживаются проекты NeoForge; проекты Forge/Fabric не мигрируются.
+diff --git a/src/main/java/dev/mvswitcher/tools/ApiDiffGenerator.java b/src/main/java/dev/mvswitcher/tools/ApiDiffGenerator.java
+new file mode 100644
+index 0000000..2339e47
+--- /dev/null
++++ b/src/main/java/dev/mvswitcher/tools/ApiDiffGenerator.java
+@@ -0,0 +1,394 @@
++package dev.mvswitcher.tools;
++
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.SerializationFeature;
++import com.github.javaparser.JavaParser;
++import com.github.javaparser.ParseResult;
++import com.github.javaparser.ParserConfiguration;
++import com.github.javaparser.ast.CompilationUnit;
++import com.github.javaparser.ast.Node;
++import com.github.javaparser.ast.body.AnnotationDeclaration;
++import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
++import com.github.javaparser.ast.body.MethodDeclaration;
++import com.github.javaparser.ast.body.TypeDeclaration;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.*;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import java.util.stream.Collectors;
++import java.util.stream.Stream;
++
++/**
++ * Compares the public API of two source trees (for example decompiled Minecraft sources of two
++ * neighbouring versions) and produces candidate migration rules in the MVSwitcher rules.json format.
++ *
++ * <p>What it detects:
++ * <ul>
++ *   <li>classes that moved to another package (same simple name),</li>
++ *   <li>classes that were renamed (very similar method shape, mutual best match),</li>
++ *   <li>methods that were renamed with an identical signature inside the same class.</li>
++ * </ul>
++ * Class moves and renames become {@code text} rules. Method renames become {@code warn} rules, because
++ * a text replacement of a method name cannot know the receiver type; with
++ * {@link Options#autoReplaceMethods()} the unambiguous ones become {@code text} rules instead.
++ * Everything else (removed classes, methods without a match) is only listed in the notes.
++ * The output is a set of <em>candidates</em> to be reviewed by a human, not a finished migration.
++ */
++public final class ApiDiffGenerator {
++    private static final double CLASS_SIMILARITY = 0.8;
++    private static final int MIN_METHODS_FOR_CLASS_RENAME = 3;
++
++    private ApiDiffGenerator() {}
++
++    public record Method(String name, String params, String returnType) {}
++
++    public record ClassApi(String fqn, String simple, boolean topLevel, Set<Method> methods) {}
++
++    public record Scan(Map<String, ClassApi> classes, int parsedFiles, int failedFiles) {}
++
++    public record Options(String from, String to, String loader, boolean autoReplaceMethods,
++                          boolean includeRemoved) {}
++
++    public record Result(List<Map<String, Object>> rules, List<String> notes) {}
++
++    // ---------------------------------------------------------------- scanning
++
++    public static Scan scan(Path root) throws IOException {
++        JavaParser parser = new JavaParser(
++                new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.BLEEDING_EDGE));
++        List<Path> files;
++        try (Stream<Path> paths = Files.walk(root)) {
++            files = paths.filter(p -> Files.isRegularFile(p) && p.toString().endsWith(".java")).sorted().toList();
++        }
++        Map<String, ClassApi> classes = new TreeMap<>();
++        int parsed = 0;
++        int failed = 0;
++        for (Path file : files) {
++            ParseResult<CompilationUnit> result = parser.parse(file);
++            if (!result.isSuccessful() || result.getResult().isEmpty()) {
++                failed++;
++                continue;
++            }
++            parsed++;
++            CompilationUnit unit = result.getResult().get();
++            String pkg = unit.getPackageDeclaration().map(p -> p.getNameAsString()).orElse("");
++            for (TypeDeclaration<?> type : unit.findAll(TypeDeclaration.class)) {
++                String name = type.getNameAsString();
++                boolean topLevel = true;
++                Node parent = type.getParentNode().orElse(null);
++                while (parent instanceof TypeDeclaration<?> outer) {
++                    name = outer.getNameAsString() + "." + name;
++                    topLevel = false;
++                    parent = outer.getParentNode().orElse(null);
++                }
++                if (!(parent instanceof CompilationUnit)) continue; // local or anonymous type
++                if (type.isPrivate() || (topLevel && !type.isPublic())) continue;
++                String fqn = pkg.isEmpty() ? name : pkg + "." + name;
++                boolean iface = (type instanceof ClassOrInterfaceDeclaration c && c.isInterface())
++                        || type instanceof AnnotationDeclaration;
++                Set<Method> methods = new TreeSet<>(Comparator.comparing(Method::name)
++                        .thenComparing(Method::params).thenComparing(Method::returnType));
++                for (MethodDeclaration method : type.getMethods()) {
++                    if (!(method.isPublic() || method.isProtected() || (iface && !method.isPrivate()))) continue;
++                    String params = method.getParameters().stream()
++                            .map(p -> normalizeType(p.getType().asString()) + (p.isVarArgs() ? "..." : ""))
++                            .collect(Collectors.joining(","));
++                    methods.add(new Method(method.getNameAsString(), params,
++                            normalizeType(method.getType().asString())));
++                }
++                classes.put(fqn, new ClassApi(fqn, type.getNameAsString(), topLevel, methods));
++            }
++        }
++        return new Scan(classes, parsed, failed);
++    }
++
++    static String normalizeType(String type) {
++        String result = type.trim();
++        while (result.matches("(?s).*<[^<>]*>.*")) result = result.replaceAll("<[^<>]*>", "");
++        return result.replaceAll("\\s+", "");
++    }
++
++    // ---------------------------------------------------------------- diffing
++
++    public static Result diff(Scan oldScan, Scan newScan, Options options) {
++        Map<String, ClassApi> oldClasses = oldScan.classes();
++        Map<String, ClassApi> newClasses = newScan.classes();
++        Set<String> removed = new TreeSet<>(oldClasses.keySet());
++        removed.removeAll(newClasses.keySet());
++        Set<String> added = new TreeSet<>(newClasses.keySet());
++        added.removeAll(oldClasses.keySet());
++
++        List<Map<String, Object>> rules = new ArrayList<>();
++        List<String> notes = new ArrayList<>();
++        Ids ids = new Ids(options);
++        Map<String, String> classMap = new LinkedHashMap<>();       // old fqn -> new fqn
++        Map<String, String> simpleRenames = new LinkedHashMap<>();  // old simple -> new simple
++        Set<String> handledRemoved = new HashSet<>();
++        Set<String> handledAdded = new HashSet<>();
++        List<Map<String, Object>> classRules = new ArrayList<>();
++        List<Map<String, Object>> simpleNameRules = new ArrayList<>();
++
++        // 1. Classes that kept their simple name but changed package.
++        Map<String, List<String>> removedBySimple = groupBySimple(removed, oldClasses);
++        Map<String, List<String>> addedBySimple = groupBySimple(added, newClasses);
++        for (Map.Entry<String, List<String>> entry : removedBySimple.entrySet()) {
++            List<String> candidates = addedBySimple.get(entry.getKey());
++            if (candidates == null || entry.getValue().size() != 1 || candidates.size() != 1) continue;
++            String oldFqn = entry.getValue().get(0);
++            String newFqn = candidates.get(0);
++            classRules.add(text(ids.next("class-move", oldFqn), options, wordRegex(oldFqn), newFqn));
++            classMap.put(oldFqn, newFqn);
++            handledRemoved.add(oldFqn);
++            handledAdded.add(newFqn);
++            notes.add("class moved: " + oldFqn + " -> " + newFqn);
++        }
++
++        // 2. Classes that were renamed: mutual best match by method shape.
++        List<String> remainingRemoved = removed.stream().filter(c -> !handledRemoved.contains(c)).toList();
++        List<String> remainingAdded = added.stream().filter(c -> !handledAdded.contains(c)).toList();
++        for (String oldFqn : remainingRemoved) {
++            ClassApi oldClass = oldClasses.get(oldFqn);
++            if (shape(oldClass).size() < MIN_METHODS_FOR_CLASS_RENAME) continue;
++            String newFqn = bestMatch(remainingAdded, c -> similarity(oldClass, newClasses.get(c)));
++            if (newFqn == null) continue;
++            ClassApi newClass = newClasses.get(newFqn);
++            String back = bestMatch(remainingRemoved, c -> similarity(oldClasses.get(c), newClass));
++            if (!oldFqn.equals(back) || handledAdded.contains(newFqn)) continue;
++            classRules.add(text(ids.next("class-rename", oldFqn), options, wordRegex(oldFqn), newFqn));
++            if (!oldClass.simple().equals(newClass.simple())) {
++                simpleNameRules.add(text(ids.next("class-rename-simple", oldClass.simple()), options,
++                        wordRegex(oldClass.simple()), newClass.simple()));
++                simpleRenames.put(oldClass.simple(), newClass.simple());
++            }
++            classMap.put(oldFqn, newFqn);
++            handledRemoved.add(oldFqn);
++            handledAdded.add(newFqn);
++            notes.add(String.format(Locale.ROOT, "class renamed (similarity %.2f, review it): %s -> %s",
++                    similarity(oldClass, newClass), oldFqn, newFqn));
++        }
++        rules.addAll(classRules);
++        rules.addAll(simpleNameRules);
++
++        // 3. Methods renamed with an identical signature.
++        Set<String> newMethodNames = newClasses.values().stream()
++                .flatMap(c -> c.methods().stream()).map(Method::name).collect(Collectors.toSet());
++        Map<String, List<String>> renamedMethods = new LinkedHashMap<>(); // "old->new" -> class names
++        Map<String, Set<String>> newNamesForOld = new HashMap<>();
++        List<String> pairs = new ArrayList<>();
++        for (String fqn : oldClasses.keySet()) if (newClasses.containsKey(fqn)) pairs.add(fqn);
++        for (String fqn : classMap.keySet()) if (!pairs.contains(fqn)) pairs.add(fqn);
++        Collections.sort(pairs);
++        for (String oldFqn : pairs) {
++            String newFqn = classMap.getOrDefault(oldFqn, oldFqn);
++            ClassApi oldClass = oldClasses.get(oldFqn);
++            ClassApi newClass = newClasses.get(newFqn);
++            Set<Method> oldMethods = new LinkedHashSet<>();
++            for (Method method : oldClass.methods()) {
++                oldMethods.add(new Method(method.name(), applyRenames(method.params(), simpleRenames),
++                        applyRenames(method.returnType(), simpleRenames)));
++            }
++            List<Method> removedMethods = oldMethods.stream().filter(m -> !newClass.methods().contains(m)).toList();
++            List<Method> addedMethods = newClass.methods().stream().filter(m -> !oldMethods.contains(m)).toList();
++            for (Method gone : removedMethods) {
++                List<Method> sameSignatureRemoved = removedMethods.stream()
++                        .filter(m -> m.params().equals(gone.params()) && m.returnType().equals(gone.returnType())).toList();
++                List<Method> candidates = addedMethods.stream()
++                        .filter(m -> m.params().equals(gone.params()) && m.returnType().equals(gone.returnType())).toList();
++                if (sameSignatureRemoved.size() == 1 && candidates.size() == 1) {
++                    String key = gone.name() + "->" + candidates.get(0).name();
++                    renamedMethods.computeIfAbsent(key, k -> new ArrayList<>()).add(newClass.simple());
++                    newNamesForOld.computeIfAbsent(gone.name(), k -> new TreeSet<>()).add(candidates.get(0).name());
++                } else {
++                    notes.add("method removed or changed (no unique match): " + oldClass.simple() + "."
++                            + gone.name() + "(" + gone.params() + ") : " + gone.returnType());
++                }
++            }
++        }
++        for (Map.Entry<String, List<String>> entry : renamedMethods.entrySet()) {
++            String[] names = entry.getKey().split("->");
++            String oldName = names[0];
++            String newName = names[1];
++            List<String> classNames = entry.getValue().stream().distinct().sorted().toList();
++            boolean unambiguous = !newMethodNames.contains(oldName) && newNamesForOld.get(oldName).size() == 1;
++            String regex = "\\b" + Pattern.quote(oldName) + "\\(";
++            if (options.autoReplaceMethods() && unambiguous) {
++                rules.add(text(ids.next("method-rename", oldName + "-" + newName), options, regex, newName + "("));
++                notes.add("method rename applied as text rule: " + oldName + " -> " + newName + " in " + classNames);
++            } else {
++                rules.add(warn(ids.next("method-rename-warning", oldName + "-" + newName), options, regex,
++                        "Method " + oldName + "(...) was renamed to " + newName + "(...) in " + classNames
++                                + " (" + options.from() + " -> " + options.to() + "). Check calls and overrides."));
++                notes.add("method rename reported as warning: " + oldName + " -> " + newName + " in " + classNames);
++            }
++        }
++
++        // 4. Classes that no longer exist.
++        for (String fqn : removed) {
++            if (handledRemoved.contains(fqn)) continue;
++            ClassApi gone = oldClasses.get(fqn);
++            notes.add("class removed: " + fqn);
++            if (options.includeRemoved() && gone.topLevel()) {
++                rules.add(warnLiteral(ids.next("class-removed", fqn), options, "import " + fqn + ";",
++                        "Class " + fqn + " does not exist in " + options.to() + "; port its usages manually."));
++            }
++        }
++        return new Result(rules, notes);
++    }
++
++    // ---------------------------------------------------------------- helpers
++
++    private static Map<String, List<String>> groupBySimple(Collection<String> fqns, Map<String, ClassApi> classes) {
++        Map<String, List<String>> result = new TreeMap<>();
++        for (String fqn : fqns) {
++            result.computeIfAbsent(classes.get(fqn).simple(), k -> new ArrayList<>()).add(fqn);
++        }
++        return result;
++    }
++
++    private static Set<String> shape(ClassApi api) {
++        Set<String> result = new HashSet<>();
++        for (Method m : api.methods()) {
++            int arity = m.params().isEmpty() ? 0 : m.params().split(",").length;
++            result.add(m.name() + "/" + arity);
++        }
++        return result;
++    }
++
++    private static double similarity(ClassApi a, ClassApi b) {
++        Set<String> first = shape(a);
++        Set<String> second = shape(b);
++        if (first.isEmpty() || second.isEmpty()) return 0;
++        Set<String> intersection = new HashSet<>(first);
++        intersection.retainAll(second);
++        Set<String> union = new HashSet<>(first);
++        union.addAll(second);
++        return (double) intersection.size() / union.size();
++    }
++
++    /** Best candidate with a score above the threshold that is strictly better than the runner-up. */
++    private static String bestMatch(List<String> candidates, java.util.function.ToDoubleFunction<String> score) {
++        String best = null;
++        double bestScore = 0;
++        double second = 0;
++        for (String candidate : candidates) {
++            double value = score.applyAsDouble(candidate);
++            if (value > bestScore) {
++                second = bestScore;
++                bestScore = value;
++                best = candidate;
++            } else if (value > second) {
++                second = value;
++            }
++        }
++        return best != null && bestScore >= CLASS_SIMILARITY && bestScore > second ? best : null;
++    }
++
++    private static String applyRenames(String type, Map<String, String> simpleRenames) {
++        String result = type;
++        for (Map.Entry<String, String> entry : simpleRenames.entrySet()) {
++            result = result.replaceAll("\\b" + Pattern.quote(entry.getKey()) + "\\b",
++                    Matcher.quoteReplacement(entry.getValue()));
++        }
++        return result;
++    }
++
++    private static String wordRegex(String name) {
++        return "\\b" + name.replace(".", "\\.") + "\\b";
++    }
++
++    private static Map<String, Object> base(String id, Options options, String type) {
++        Map<String, Object> rule = new LinkedHashMap<>();
++        rule.put("id", id);
++        rule.put("from", options.from());
++        rule.put("to", options.to());
++        rule.put("loader", options.loader());
++        if (type != null) rule.put("type", type);
++        rule.put("includes", List.of("**/*.java"));
++        return rule;
++    }
++
++    private static Map<String, Object> text(String id, Options options, String regex, String replacement) {
++        Map<String, Object> rule = base(id, options, null);
++        rule.put("findRegex", regex);
++        rule.put("replace", Matcher.quoteReplacement(replacement));
++        return rule;
++    }
++
++    private static Map<String, Object> warn(String id, Options options, String regex, String message) {
++        Map<String, Object> rule = base(id, options, "warn");
++        rule.put("findRegex", regex);
++        rule.put("message", message);
++        return rule;
++    }
++
++    private static Map<String, Object> warnLiteral(String id, Options options, String literal, String message) {
++        Map<String, Object> rule = base(id, options, "warn");
++        rule.put("find", literal);
++        rule.put("message", message);
++        return rule;
++    }
++
++    private static final class Ids {
++        private final Options options;
++        private final Set<String> used = new HashSet<>();
++
++        Ids(Options options) { this.options = options; }
++
++        String next(String kind, String name) {
++            String base = ("auto-" + options.from() + "-" + options.to() + "-" + kind + "-" + name)
++                    .replaceAll("[^A-Za-z0-9._-]", "_");
++            String id = base;
++            for (int i = 2; !used.add(id); i++) id = base + "-" + i;
++            return id;
++        }
++    }
++
++    // ---------------------------------------------------------------- output
++
++    public static void write(Result result, Options options, Path outputRoot) throws IOException {
++        Path directory = outputRoot.resolve(options.from()).resolve(options.to());
++        Files.createDirectories(directory);
++        ObjectMapper mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
++        Files.writeString(directory.resolve("rules.json"),
++                mapper.writeValueAsString(Map.of("rules", result.rules())) + "\n");
++        Files.write(directory.resolve("notes.txt"), result.notes());
++    }
++
++    public static void main(String[] args) throws IOException {
++        Map<String, String> values = new HashMap<>();
++        Set<String> flags = new HashSet<>();
++        for (int i = 0; i < args.length; i++) {
++            if (!args[i].startsWith("--")) throw new IllegalArgumentException("Unexpected argument: " + args[i]);
++            if (args[i].equals("--auto-replace-methods") || args[i].equals("--include-removed")) {
++                flags.add(args[i]);
++            } else if (i + 1 < args.length) {
++                values.put(args[i], args[++i]);
++            } else {
++                throw new IllegalArgumentException("Missing value for " + args[i]);
++            }
++        }
++        for (String required : List.of("--old", "--new", "--from", "--to")) {
++            if (!values.containsKey(required)) {
++                System.err.println("Usage: ApiDiffGenerator --old <dir> --new <dir> --from <version> --to <version>"
++                        + " [--loader neoforge] [--out generated-rules] [--auto-replace-methods] [--include-removed]");
++                System.exit(2);
++            }
++        }
++        Options options = new Options(values.get("--from"), values.get("--to"),
++                values.getOrDefault("--loader", "neoforge").toLowerCase(Locale.ROOT),
++                flags.contains("--auto-replace-methods"), flags.contains("--include-removed"));
++        Scan oldScan = scan(Path.of(values.get("--old")));
++        Scan newScan = scan(Path.of(values.get("--new")));
++        System.out.printf("Scanned old: %d classes (%d files, %d unparsable); new: %d classes (%d files, %d unparsable)%n",
++                oldScan.classes().size(), oldScan.parsedFiles(), oldScan.failedFiles(),
++                newScan.classes().size(), newScan.parsedFiles(), newScan.failedFiles());
++        Result result = diff(oldScan, newScan, options);
++        Path out = Path.of(values.getOrDefault("--out", "generated-rules"));
++        write(result, options, out);
++        System.out.printf("Wrote %d candidate rule(s) and %d note(s) to %s%n",
++                result.rules().size(), result.notes().size(),
++                out.resolve(options.from()).resolve(options.to()));
++    }
++}
+diff --git a/src/test/java/dev/mvswitcher/tools/ApiDiffGeneratorTest.java b/src/test/java/dev/mvswitcher/tools/ApiDiffGeneratorTest.java
+new file mode 100644
+index 0000000..8354a2c
+--- /dev/null
++++ b/src/test/java/dev/mvswitcher/tools/ApiDiffGeneratorTest.java
+@@ -0,0 +1,96 @@
++package dev.mvswitcher.tools;
++
++import dev.mvswitcher.MigrationOptions;
++import dev.mvswitcher.MigrationEngine;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.List;
++import java.util.Map;
++import static org.junit.jupiter.api.Assertions.*;
++
++class ApiDiffGeneratorTest {
++    @TempDir Path temp;
++
++    private void source(Path root, String pkg, String name, String body) throws IOException {
++        Path dir = root.resolve(pkg.replace('.', '/'));
++        Files.createDirectories(dir);
++        Files.writeString(dir.resolve(name + ".java"), "package " + pkg + ";\npublic class " + name + " {\n" + body + "\n}\n");
++    }
++
++    private ApiDiffGenerator.Result diff(boolean auto, boolean removed) throws IOException {
++        Path oldRoot = temp.resolve("old");
++        Path newRoot = temp.resolve("new");
++        source(oldRoot, "net.mc.world", "Block",
++                "public int getSignal(int power) { return 0; }\npublic void keep() {}\nprotected void tick() {}");
++        source(newRoot, "net.mc.world", "Block",
++                "public int ownSignal(int power) { return 0; }\npublic void keep() {}\nprotected void tick() {}");
++        source(oldRoot, "net.mc.util", "Helper", "public void help() {}");
++        source(newRoot, "net.mc.core", "Helper", "public void help() {}");
++        String shape = "public static Object of(String s) { return null; }\npublic static Object parse(String s) { return null; }\n"
++                + "public String getPath() { return \"\"; }\npublic String getNamespace() { return \"\"; }\n"
++                + "public Object withPath(String s) { return null; }";
++        source(oldRoot, "net.mc.res", "ResourceLocation", shape);
++        source(newRoot, "net.mc.res", "Identifier", shape);
++        source(oldRoot, "net.mc.gone", "Gone", "public void bye() {}");
++        var options = new ApiDiffGenerator.Options("1.21.11", "26.3", "neoforge", auto, removed);
++        return ApiDiffGenerator.diff(ApiDiffGenerator.scan(oldRoot), ApiDiffGenerator.scan(newRoot), options);
++    }
++
++    private Map<String, Object> rule(ApiDiffGenerator.Result result, String idPart) {
++        return result.rules().stream().filter(r -> r.get("id").toString().contains(idPart)).findFirst().orElse(null);
++    }
++
++    @Test void detectsClassMoveRenameAndMethodRename() throws Exception {
++        var result = diff(false, false);
++        assertNotNull(rule(result, "class-move-net.mc.util.Helper"));
++        assertNotNull(rule(result, "class-rename-net.mc.res.ResourceLocation"));
++        assertNotNull(rule(result, "class-rename-simple-ResourceLocation"));
++        var method = rule(result, "method-rename-warning-getSignal-ownSignal");
++        assertNotNull(method);
++        assertEquals("warn", method.get("type"));
++        assertNull(rule(result, "class-removed"));
++        assertTrue(result.notes().contains("class removed: net.mc.gone.Gone"));
++    }
++
++    @Test void autoReplaceTurnsUnambiguousMethodRenamesIntoTextRules() throws Exception {
++        var method = rule(diff(true, false), "method-rename-getSignal-ownSignal");
++        assertNotNull(method);
++        assertNull(method.get("type"));
++        assertEquals("ownSignal(", method.get("replace"));
++    }
++
++    @Test void removedClassesBecomeWarningsOnlyOnRequest() throws Exception {
++        var rule = rule(diff(false, true), "class-removed-net.mc.gone.Gone");
++        assertNotNull(rule);
++        assertEquals("import net.mc.gone.Gone;", rule.get("find"));
++    }
++
++    @Test void generatedRulesPassEngineValidationAndMigrateCode() throws Exception {
++        var options = new ApiDiffGenerator.Options("1.21.11", "26.3", "neoforge", true, true);
++        var result = diff(true, true);
++        Path rulesRoot = temp.resolve("generated");
++        ApiDiffGenerator.write(result, options, rulesRoot);
++
++        Path project = temp.resolve("Mod");
++        Files.createDirectories(project.resolve("src/main/resources/META-INF"));
++        Files.createDirectories(project.resolve("src/main/java/example"));
++        Files.writeString(project.resolve("build.gradle"), "plugins { id 'net.neoforged.gradle.userdev' }\n");
++        Files.writeString(project.resolve("gradle.properties"), "minecraft_version=1.21.11\nneo_version=21.11.48\n");
++        Files.writeString(project.resolve("src/main/resources/META-INF/neoforge.mods.toml"), "modLoader=\"javafml\"\n");
++        Files.writeString(project.resolve("src/main/java/example/Use.java"),
++                "import net.mc.util.Helper;\nimport net.mc.res.ResourceLocation;\n"
++                        + "class Use { Object x = ResourceLocation.of(\"a\"); int s(Block b) { return b.getSignal(1); } }\n");
++        var report = MigrationEngine.migrate(new MigrationOptions(project, "1.21.11", "26.3", null, null,
++                temp.resolve("out"), rulesRoot, null, false, false, true));
++
++        assertFalse(report.hasErrors());
++        String migrated = Files.readString(temp.resolve("out/src/main/java/example/Use.java"));
++        assertTrue(migrated.contains("import net.mc.core.Helper;"));
++        assertTrue(migrated.contains("import net.mc.res.Identifier;"));
++        assertTrue(migrated.contains("Identifier.of(\"a\")"));
++        assertTrue(migrated.contains("b.ownSignal(1)"));
++    }
++}
+-- 
+2.43.0
+
+
+From ee500e493651c94d983fb14e0da7264fcf8504c0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 13:38:43 +0300
+Subject: [PATCH 3/4] Add golden tests for every rule edge and fix reverse
+ codec rules
+
+- Add GoldenMigrationTest: cases live in src/test/resources/golden/
+  <from>/<to>/<case>/{input,expected}; a second test requires at least
+  one case for every edge in rules/index.json.
+- Add cases for both bundled edges (gui-screen, rail-blocks,
+  small-api-changes).
+- Fix the reverse (1.21.11 -> 26.3) codec removal rules: they swallowed
+  the newline after the removed codec() method and glued the next member
+  to the class declaration line.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017cjHkPet6EQbigJBGtkEKc
+---
+ README.md                                     |   6 +
+ .../resources/rules/1.21.11/26.3/rules.json   |   4 +-
+ .../dev/mvswitcher/GoldenMigrationTest.java   | 116 ++++++++++++++++++
+ .../java/example/EnderDispenserScreen.java    |   8 ++
+ .../java/example/EnderDispenserScreen.java    |  10 ++
+ .../java/example/PlayerDetectorRailBlock.java |   3 +
+ .../main/java/example/RailCreatorBlock.java   |  10 ++
+ .../java/example/PlayerDetectorRailBlock.java |   5 +
+ .../main/java/example/RailCreatorBlock.java   |  14 +++
+ .../java/example/EnderDispenserStorage.java   |   6 +
+ .../main/java/example/RailCreatorEntity.java  |   3 +
+ .../src/main/java/example/TeroMod.java        |   3 +
+ .../java/example/EnderDispenserStorage.java   |   6 +
+ .../main/java/example/RailCreatorEntity.java  |   3 +
+ .../input/src/main/java/example/TeroMod.java  |   3 +
+ .../java/example/EnderDispenserScreen.java    |  10 ++
+ .../java/example/EnderDispenserScreen.java    |   8 ++
+ .../java/example/PlayerDetectorRailBlock.java |   5 +
+ .../main/java/example/RailCreatorBlock.java   |  14 +++
+ .../java/example/PlayerDetectorRailBlock.java |   3 +
+ .../main/java/example/RailCreatorBlock.java   |  10 ++
+ .../java/example/EnderDispenserStorage.java   |   6 +
+ .../main/java/example/RailCreatorEntity.java  |   3 +
+ .../src/main/java/example/TeroMod.java        |   3 +
+ .../java/example/EnderDispenserStorage.java   |   6 +
+ .../main/java/example/RailCreatorEntity.java  |   3 +
+ .../input/src/main/java/example/TeroMod.java  |   3 +
+ 27 files changed, 272 insertions(+), 2 deletions(-)
+ create mode 100644 src/test/java/dev/mvswitcher/GoldenMigrationTest.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/TeroMod.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+ create mode 100644 src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/TeroMod.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/TeroMod.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+ create mode 100644 src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/TeroMod.java
+
+diff --git a/README.md b/README.md
+index c23fc37..54b2e93 100644
+--- a/README.md
++++ b/README.md
+@@ -182,6 +182,12 @@ java -cp "build/install/mvswitcher/lib/*" dev.mvswitcher.tools.ApiDiffGenerator
+ 
+ Это кандидаты на правила, а не готовая миграция: изменения полей, смена порядка аргументов и логики не определяются. Переименование метода после переименования класса сопоставляется по новым именам типов, но сложные цепочки изменений проверяйте вручную. Генератор проверен на синтетических деревьях исходников; на реальных исходниках Minecraft его ещё не запускали.
+ 
++## Golden-тесты правил
++
++Каждое ребро правил проверяется на примерах кода. Кейс — это папка `src/test/resources/golden/<from>/<to>/<case>/` с двумя подпапками: `input/` (исходники мода в исходной версии) и `expected/` (файлы, какими они должны стать после миграции). Метаданные сборки тест создаёт сам, поэтому в кейсе лежат только исходники. Новый кейс не требует правки Java.
++
++Тест `GoldenMigrationTest` прогоняет все кейсы через настоящий движок (без Gradle-сборки) и сравнивает результат с `expected/` построчно. Второй тест следит, чтобы у каждого ребра из `rules/index.json` был хотя бы один кейс: новое ребро правил без кейса не пройдёт проверку.
++
+ ## Ограничения
+ 
+ - Поддерживаются проекты NeoForge; проекты Forge/Fabric не мигрируются.
+diff --git a/src/main/resources/rules/1.21.11/26.3/rules.json b/src/main/resources/rules/1.21.11/26.3/rules.json
+index 46fc265..e1be767 100644
+--- a/src/main/resources/rules/1.21.11/26.3/rules.json
++++ b/src/main/resources/rules/1.21.11/26.3/rules.json
+@@ -58,7 +58,7 @@
+       "from": "1.21.11",
+       "to": "26.3",
+       "includes": ["**/PlayerDetectorRailBlock.java"],
+-      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec\\(PlayerDetectorRailBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseRailBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
++      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec\\(PlayerDetectorRailBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseRailBlock> codec\\(\\) \\{ return CODEC; \\}",
+       "replace": "",
+       "maxReplacements": 1
+     },
+@@ -67,7 +67,7 @@
+       "from": "1.21.11",
+       "to": "26.3",
+       "includes": ["**/RailCreatorBlock.java"],
+-      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<RailCreatorBlock> CODEC = simpleCodec\\(RailCreatorBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseEntityBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
++      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<RailCreatorBlock> CODEC = simpleCodec\\(RailCreatorBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseEntityBlock> codec\\(\\) \\{ return CODEC; \\}",
+       "replace": "",
+       "maxReplacements": 1
+     },
+diff --git a/src/test/java/dev/mvswitcher/GoldenMigrationTest.java b/src/test/java/dev/mvswitcher/GoldenMigrationTest.java
+new file mode 100644
+index 0000000..b559e4d
+--- /dev/null
++++ b/src/test/java/dev/mvswitcher/GoldenMigrationTest.java
+@@ -0,0 +1,116 @@
++package dev.mvswitcher;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.io.IOException;
++import java.nio.file.*;
++import java.util.ArrayList;
++import java.util.List;
++import static org.junit.jupiter.api.Assertions.*;
++
++/**
++ * Golden tests for the bundled rules. Every case lives in
++ * {@code src/test/resources/golden/<from>/<to>/<case>/} with an {@code input/} tree (the mod sources in the
++ * source version) and an {@code expected/} tree (the files as they must look after migration). A new case needs
++ * no Java: add the two folders. Build metadata is generated by the test, so the folders hold only the sources.
++ */
++class GoldenMigrationTest {
++    @TempDir Path temp;
++
++    record Case(String from, String to, String name, Path dir) {}
++
++    private static Path goldenRoot() throws Exception {
++        var url = GoldenMigrationTest.class.getResource("/golden");
++        assertNotNull(url);
++        return Path.of(url.toURI());
++    }
++
++    private static List<Case> cases() throws Exception {
++        Path root = goldenRoot();
++        List<Case> result = new ArrayList<>();
++        try (var paths = Files.walk(root, 3)) {
++            paths.filter(p -> Files.isDirectory(p) && root.relativize(p).getNameCount() == 3).sorted().forEach(p -> {
++                Path relative = root.relativize(p);
++                result.add(new Case(relative.getName(0).toString(), relative.getName(1).toString(),
++                        relative.getName(2).toString(), p));
++            });
++        }
++        return result;
++    }
++
++    private static void copyTree(Path source, Path target) throws IOException {
++        try (var paths = Files.walk(source)) {
++            for (Path path : paths.toList()) {
++                Path destination = target.resolve(source.relativize(path).toString());
++                if (Files.isDirectory(path)) Files.createDirectories(destination);
++                else {
++                    Files.createDirectories(destination.getParent());
++                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING);
++                }
++            }
++        }
++    }
++
++    private static String normalized(Path file) throws IOException {
++        return Files.readString(file).replace("\r\n", "\n");
++    }
++
++    private List<String> run(Case c) throws Exception {
++        String label = c.from() + " -> " + c.to() + " / " + c.name();
++        List<String> problems = new ArrayList<>();
++        Path input = c.dir().resolve("input");
++        Path expected = c.dir().resolve("expected");
++        if (!Files.isDirectory(input) || !Files.isDirectory(expected)) {
++            problems.add(label + ": needs both input/ and expected/ folders");
++            return problems;
++        }
++        String key = (c.from() + "_" + c.to() + "_" + c.name()).replaceAll("[^A-Za-z0-9._-]", "_");
++        Path project = temp.resolve("project_" + key);
++        copyTree(input, project);
++        Files.writeString(project.resolve("build.gradle"), "plugins { id 'net.neoforged.gradle.userdev' }\n");
++        Files.writeString(project.resolve("gradle.properties"), "minecraft_version=" + c.from() + "\n");
++        Files.createDirectories(project.resolve("src/main/resources/META-INF"));
++        Files.writeString(project.resolve("src/main/resources/META-INF/neoforge.mods.toml"), "modLoader=\"javafml\"\n");
++
++        Path output = temp.resolve("output_" + key);
++        var report = MigrationEngine.migrate(new MigrationOptions(
++                project, c.from(), c.to(), null, null, output, null, null, false, false, true));
++        if (report.hasErrors()) problems.add(label + ": migration reported errors:\n" + report.toText());
++
++        List<Path> expectedFiles;
++        try (var paths = Files.walk(expected)) {
++            expectedFiles = paths.filter(Files::isRegularFile).sorted().toList();
++        }
++        if (expectedFiles.isEmpty()) problems.add(label + ": expected/ contains no files");
++        for (Path file : expectedFiles) {
++            String relative = expected.relativize(file).toString().replace('\\', '/');
++            Path actual = output.resolve(relative);
++            if (!Files.isRegularFile(actual)) {
++                problems.add(label + ": missing output file " + relative);
++            } else if (!normalized(file).equals(normalized(actual))) {
++                problems.add(label + ": " + relative + " differs.\n--- expected ---\n" + normalized(file)
++                        + "--- actual ---\n" + normalized(actual));
++            }
++        }
++        return problems;
++    }
++
++    @Test void everyGoldenCaseProducesTheExpectedFiles() throws Exception {
++        List<Case> cases = cases();
++        assertFalse(cases.isEmpty());
++        List<String> problems = new ArrayList<>();
++        for (Case c : cases) problems.addAll(run(c));
++        assertEquals(List.of(), problems);
++    }
++
++    @Test void everyBundledEdgeHasAtLeastOneGoldenCase() throws Exception {
++        List<Case> cases = cases();
++        List<String> missing = new ArrayList<>();
++        for (String edge : MigrationEngine.bundledRoutes()) {
++            String[] versions = edge.split(" -> ");
++            boolean covered = cases.stream().anyMatch(c -> c.from().equals(versions[0]) && c.to().equals(versions[1]));
++            if (!covered) missing.add(edge);
++        }
++        assertEquals(List.of(), missing);
++    }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java b/src/test/resources/golden/1.21.11/26.3/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+new file mode 100644
+index 0000000..e16308f
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+@@ -0,0 +1,8 @@
++import net.minecraft.client.gui.GuiGraphicsExtractor;
++class EnderDispenserScreen {
++    EnderDispenserScreen() {
++        super(menu, inventory, title, 176, 165);
++    }
++    public void extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {}
++    protected void extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY) {}
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/gui-screen/input/src/main/java/example/EnderDispenserScreen.java b/src/test/resources/golden/1.21.11/26.3/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+new file mode 100644
+index 0000000..0b8e17a
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+@@ -0,0 +1,10 @@
++import net.minecraft.client.gui.GuiGraphics;
++class EnderDispenserScreen {
++    EnderDispenserScreen() {
++        super(menu, inventory, title);
++        this.imageWidth = 176;
++        this.imageHeight = 165;
++    }
++    public void renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {}
++    protected void renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY) {}
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java b/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+new file mode 100644
+index 0000000..6c25ab6
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+@@ -0,0 +1,3 @@
++public class PlayerDetectorRailBlock extends BaseRailBlock {
++    @Override protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) { return 15; }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java b/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+new file mode 100644
+index 0000000..40607bc
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+@@ -0,0 +1,10 @@
++public class RailCreatorBlock extends BaseEntityBlock {
++    @Override public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,
++        @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity,
++        @NonNull ItemStack destroyedWith) {
++        super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);
++        if (blockEntity instanceof RailCreatorEntity entity) {
++            entity.dropInputs(level);
++        }
++    }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java b/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+new file mode 100644
+index 0000000..b1c7533
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+@@ -0,0 +1,5 @@
++public class PlayerDetectorRailBlock extends BaseRailBlock {
++    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);
++    @Override protected com.mojang.serialization.MapCodec<? extends BaseRailBlock> codec() { return CODEC; }
++    @Override protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) { return 15; }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/RailCreatorBlock.java b/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+new file mode 100644
+index 0000000..afb5928
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+@@ -0,0 +1,14 @@
++public class RailCreatorBlock extends BaseEntityBlock {
++    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);
++    @Override protected com.mojang.serialization.MapCodec<? extends BaseEntityBlock> codec() { return CODEC; }
++    @Override public void playerDestroy(@NonNull Level level, @NonNull Player player,
++        @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity,
++        @NonNull ItemStack destroyedWith) {
++        super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);
++        if (blockEntity instanceof RailCreatorEntity entity) {
++            if (level instanceof ServerLevel serverLevel) {
++                entity.dropInputs(serverLevel);
++            }
++        }
++    }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+new file mode 100644
+index 0000000..95393b2
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+@@ -0,0 +1,6 @@
++class EnderDispenserStorage {
++    static final SavedDataType<EnderDispenserStorage> DATA_TYPE =
++        new SavedDataType<EnderDispenserStorage>(
++            Identifier.fromNamespaceAndPath(TeroMod.MODID, "ender_dispenser"),
++            EnderDispenserStorage::new, CODEC, DataFixTypes.LEVEL);
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+new file mode 100644
+index 0000000..9943e92
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+@@ -0,0 +1,3 @@
++class RailCreatorEntity {
++    void update() { recipe.value().assemble(input); }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/TeroMod.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/TeroMod.java
+new file mode 100644
+index 0000000..307d246
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/expected/src/main/java/example/TeroMod.java
+@@ -0,0 +1,3 @@
++class TeroMod {
++    void config() { modContainer.registerConfig(ModConfig.Type.LOCAL, Config.SPEC); }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+new file mode 100644
+index 0000000..01c17fd
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+@@ -0,0 +1,6 @@
++class EnderDispenserStorage {
++    static final SavedDataType<EnderDispenserStorage> DATA_TYPE =
++        new SavedDataType<EnderDispenserStorage>(
++            TeroMod.MODID + "_ender_dispenser",
++            EnderDispenserStorage::new, CODEC, DataFixTypes.LEVEL);
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/RailCreatorEntity.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+new file mode 100644
+index 0000000..9d8739f
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+@@ -0,0 +1,3 @@
++class RailCreatorEntity {
++    void update() { recipe.value().assemble(input, serverLevel.registryAccess()); }
++}
+diff --git a/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/TeroMod.java b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/TeroMod.java
+new file mode 100644
+index 0000000..31548e6
+--- /dev/null
++++ b/src/test/resources/golden/1.21.11/26.3/small-api-changes/input/src/main/java/example/TeroMod.java
+@@ -0,0 +1,3 @@
++class TeroMod {
++    void config() { modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC); }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java b/src/test/resources/golden/26.3/1.21.11/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+new file mode 100644
+index 0000000..0b8e17a
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/gui-screen/expected/src/main/java/example/EnderDispenserScreen.java
+@@ -0,0 +1,10 @@
++import net.minecraft.client.gui.GuiGraphics;
++class EnderDispenserScreen {
++    EnderDispenserScreen() {
++        super(menu, inventory, title);
++        this.imageWidth = 176;
++        this.imageHeight = 165;
++    }
++    public void renderBg(@NonNull GuiGraphics graphics, float partialTick, int mouseX, int mouseY) {}
++    protected void renderLabels(@NonNull GuiGraphics graphics, int mouseX, int mouseY) {}
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/gui-screen/input/src/main/java/example/EnderDispenserScreen.java b/src/test/resources/golden/26.3/1.21.11/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+new file mode 100644
+index 0000000..e16308f
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/gui-screen/input/src/main/java/example/EnderDispenserScreen.java
+@@ -0,0 +1,8 @@
++import net.minecraft.client.gui.GuiGraphicsExtractor;
++class EnderDispenserScreen {
++    EnderDispenserScreen() {
++        super(menu, inventory, title, 176, 165);
++    }
++    public void extractBackground(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {}
++    protected void extractLabels(@NonNull GuiGraphicsExtractor graphics, int mouseX, int mouseY) {}
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java b/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+new file mode 100644
+index 0000000..b1c7533
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/PlayerDetectorRailBlock.java
+@@ -0,0 +1,5 @@
++public class PlayerDetectorRailBlock extends BaseRailBlock {
++    private static final com.mojang.serialization.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec(PlayerDetectorRailBlock::new);
++    @Override protected com.mojang.serialization.MapCodec<? extends BaseRailBlock> codec() { return CODEC; }
++    @Override protected int getSignal(BlockState state, BlockGetter level, BlockPos pos, Direction direction) { return 15; }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java b/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+new file mode 100644
+index 0000000..afb5928
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/rail-blocks/expected/src/main/java/example/RailCreatorBlock.java
+@@ -0,0 +1,14 @@
++public class RailCreatorBlock extends BaseEntityBlock {
++    private static final com.mojang.serialization.MapCodec<RailCreatorBlock> CODEC = simpleCodec(RailCreatorBlock::new);
++    @Override protected com.mojang.serialization.MapCodec<? extends BaseEntityBlock> codec() { return CODEC; }
++    @Override public void playerDestroy(@NonNull Level level, @NonNull Player player,
++        @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity,
++        @NonNull ItemStack destroyedWith) {
++        super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);
++        if (blockEntity instanceof RailCreatorEntity entity) {
++            if (level instanceof ServerLevel serverLevel) {
++                entity.dropInputs(serverLevel);
++            }
++        }
++    }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java b/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+new file mode 100644
+index 0000000..6c25ab6
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/PlayerDetectorRailBlock.java
+@@ -0,0 +1,3 @@
++public class PlayerDetectorRailBlock extends BaseRailBlock {
++    @Override protected int ownSignal(BlockState state, BlockGetter level, BlockPos pos) { return 15; }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/RailCreatorBlock.java b/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+new file mode 100644
+index 0000000..40607bc
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/rail-blocks/input/src/main/java/example/RailCreatorBlock.java
+@@ -0,0 +1,10 @@
++public class RailCreatorBlock extends BaseEntityBlock {
++    @Override public void playerDestroy(@NonNull ServerLevel level, @NonNull ServerPlayer player,
++        @NonNull BlockPos pos, @NonNull BlockState state, @Nullable BlockEntity blockEntity,
++        @NonNull ItemStack destroyedWith) {
++        super.playerDestroy(level, player, pos, state, blockEntity, destroyedWith);
++        if (blockEntity instanceof RailCreatorEntity entity) {
++            entity.dropInputs(level);
++        }
++    }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+new file mode 100644
+index 0000000..01c17fd
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/EnderDispenserStorage.java
+@@ -0,0 +1,6 @@
++class EnderDispenserStorage {
++    static final SavedDataType<EnderDispenserStorage> DATA_TYPE =
++        new SavedDataType<EnderDispenserStorage>(
++            TeroMod.MODID + "_ender_dispenser",
++            EnderDispenserStorage::new, CODEC, DataFixTypes.LEVEL);
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+new file mode 100644
+index 0000000..9d8739f
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/RailCreatorEntity.java
+@@ -0,0 +1,3 @@
++class RailCreatorEntity {
++    void update() { recipe.value().assemble(input, serverLevel.registryAccess()); }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/TeroMod.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/TeroMod.java
+new file mode 100644
+index 0000000..31548e6
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/expected/src/main/java/example/TeroMod.java
+@@ -0,0 +1,3 @@
++class TeroMod {
++    void config() { modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC); }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+new file mode 100644
+index 0000000..95393b2
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/EnderDispenserStorage.java
+@@ -0,0 +1,6 @@
++class EnderDispenserStorage {
++    static final SavedDataType<EnderDispenserStorage> DATA_TYPE =
++        new SavedDataType<EnderDispenserStorage>(
++            Identifier.fromNamespaceAndPath(TeroMod.MODID, "ender_dispenser"),
++            EnderDispenserStorage::new, CODEC, DataFixTypes.LEVEL);
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/RailCreatorEntity.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+new file mode 100644
+index 0000000..9943e92
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/RailCreatorEntity.java
+@@ -0,0 +1,3 @@
++class RailCreatorEntity {
++    void update() { recipe.value().assemble(input); }
++}
+diff --git a/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/TeroMod.java b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/TeroMod.java
+new file mode 100644
+index 0000000..307d246
+--- /dev/null
++++ b/src/test/resources/golden/26.3/1.21.11/small-api-changes/input/src/main/java/example/TeroMod.java
+@@ -0,0 +1,3 @@
++class TeroMod {
++    void config() { modContainer.registerConfig(ModConfig.Type.LOCAL, Config.SPEC); }
++}
+-- 
+2.43.0
+
+
+From 00ed947b4fec962d69c4593b27f91f2e642a4701 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 20 Nov 2026 10:17:05 +0300
+Subject: [PATCH 4/4] Detect Fabric, Quilt and Forge projects and run them in
+ rules-only mode
+
+- ProjectAnalyzer detects NeoForge, Forge, Fabric and Quilt from metadata
+  files, falling back to Gradle markers. Multi-loader projects are
+  reported as unknown instead of being guessed; legacy NeoForge projects
+  that still use META-INF/mods.toml are told apart from Forge by Gradle.
+- MigrationEngine no longer rejects non-NeoForge projects. NeoForge keeps
+  the full pipeline; other loaders copy the project, apply the rules of
+  their loader and update only gradle.properties keys that already exist.
+  Unknown loader versions are left untouched and reported, never invented.
+- --neoforge-version is rejected for other loaders; --template must use
+  the same loader as the source.
+- Rules accept loader "*" to apply to every loader.
+- Version profiles accept an optional "properties" map for extra
+  gradle.properties entries; CLI and GUI profile listings are
+  loader-neutral.
+- Add LoaderSupportTest and document loader support and its limits.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017cjHkPet6EQbigJBGtkEKc
+---
+ README.md                                     |  18 +-
+ src/main/java/dev/mvswitcher/MVSwitcher.java  |   6 +-
+ .../dev/mvswitcher/MVSwitcherInterface.java   |   8 +-
+ .../java/dev/mvswitcher/MigrationEngine.java  | 110 ++++++++---
+ .../java/dev/mvswitcher/ProjectAnalyzer.java  |  45 ++++-
+ .../java/dev/mvswitcher/VersionCatalog.java   |  13 +-
+ .../java/dev/mvswitcher/VersionProfile.java   |  26 ++-
+ .../dev/mvswitcher/LoaderSupportTest.java     | 179 ++++++++++++++++++
+ 8 files changed, 362 insertions(+), 43 deletions(-)
+ create mode 100644 src/test/java/dev/mvswitcher/LoaderSupportTest.java
+
+diff --git a/README.md b/README.md
+index 54b2e93..05c486c 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # MVSwitcher
+ 
+-MVSwitcher — консольный инструмент для переноса Minecraft-модов на NeoForge между версиями Minecraft. Он не меняет исходный проект: результат создаётся в отдельном каталоге `converted/` или по пути `--output`.
++MVSwitcher — консольный инструмент для переноса Minecraft-модов между версиями Minecraft (полностью поддержан NeoForge, остальные загрузчики частично: см. «Поддержка загрузчиков»). Он не меняет исходный проект: результат создаётся в отдельном каталоге `converted/` или по пути `--output`.
+ 
+ ## Требования и сборка
+ 
+@@ -88,6 +88,20 @@ mvswitcher migrate ./MyMod --from 1.21.11 --to 26.3 --neoforge-version 26.3.0.99
+ 
+ Чтобы добавить версию, достаточно дописать запись в этот файл. `id` по умолчанию равен `minecraft`, `loaderVersion` можно опустить, тогда его нужно передавать явно.
+ 
++Необязательное поле `properties` задаёт записи `gradle.properties`, которые нужно выставить при миграции на этот профиль (версии загрузчика, API и т. п.). Для NeoForge `neo_version` берётся из `loaderVersion`, как раньше. Версии, которых вы не знаете наверняка, лучше не вписывать: для неизвестного профиля инструмент оставляет версии загрузчика нетронутыми и пишет об этом предупреждение.
++
++## Поддержка загрузчиков
++
++Загрузчик проекта определяется автоматически: по `neoforge.mods.toml`, `META-INF/mods.toml`, `fabric.mod.json`, `quilt.mod.json`, а если их нет — по Gradle-файлам. Quilt вместе с Fabric-метаданными считается Quilt. Для NeoForge 1.20.1–1.20.4 (где метаданные лежат в `mods.toml`) различие с Forge делается по Gradle. Если в проекте признаки сразу нескольких загрузчиков (multi-loader), он не угадывается, а отклоняется с понятным сообщением: мигрируйте модули по одному.
++
++| Загрузчик | Что делает инструмент |
++|---|---|
++| NeoForge | Полный конвейер: шаблон MDK, `neo_version`, диапазон версий в `neoforge.mods.toml`, правила, сборка. Есть готовые правила. |
++| Forge, Fabric, Quilt | Режим «только правила»: копирует проект, применяет правила своего загрузчика и обновляет в `gradle.properties` только уже существующие ключи (`minecraft_version`, ключи профиля). Готовых правил для них пока нет, их нужно добавлять самим (см. генератор выше). |
++| Между загрузчиками | Не поддерживается (Forge → NeoForge, Fabric ↔ Quilt): это не только замена имён, но и другие файлы метаданных, события и регистрация. |
++
++Правило применяется к проектам того загрузчика, который указан в его поле `loader` (по умолчанию `neoforge`). Значение `"*"` означает «любой загрузчик»: оно подходит для правил, которые касаются только ванильного API Minecraft. Существующие правила я автоматически не переводил на `"*"`: правила на имена из Mojang mappings верны для Fabric только если мод тоже использует Mojang mappings (а не Yarn), и это решать вам. Генератору правил `--loader` тоже можно передать `*`.
++
+ ## Структура и формат правил
+ 
+ Встроенные направленные правила хранятся по пути:
+@@ -190,7 +204,7 @@ java -cp "build/install/mvswitcher/lib/*" dev.mvswitcher.tools.ApiDiffGenerator
+ 
+ ## Ограничения
+ 
+-- Поддерживаются проекты NeoForge; проекты Forge/Fabric не мигрируются.
++- Полный конвейер есть только для NeoForge. Проекты Forge, Fabric и Quilt проходят в режиме «только правила» (см. «Поддержка загрузчиков»): готовых правил для них нет, режим ни разу не запускался на реальных проектах этих загрузчиков, только на тестовых. Миграция между загрузчиками и multi-loader проекты не поддерживаются.
+ - Встроенные профили сейчас есть только для 1.21.11 / NeoForge 21.11.48 / Java 21 и 26.3 / NeoForge 26.3.0.99 / Java 25.
+ - Встроенные API-правила есть для 26.3 → 1.21.11 и 1.21.11 → 26.3, но обратный набор ограничен конкретными различиями, проверенными на Teromod. Для других модов изучайте ошибки сборки и добавляйте точечные правила; профиль версии и запуск сборки не означают полной совместимости.
+ - Успешная сборка не проверяет поведение мода в игре. Проверяйте мигрированный проект и тестируйте его отдельно.
+diff --git a/src/main/java/dev/mvswitcher/MVSwitcher.java b/src/main/java/dev/mvswitcher/MVSwitcher.java
+index 5936c29..fefcca0 100644
+--- a/src/main/java/dev/mvswitcher/MVSwitcher.java
++++ b/src/main/java/dev/mvswitcher/MVSwitcher.java
+@@ -70,13 +70,13 @@ public class MVSwitcher implements Runnable {
+         }
+     }
+ 
+-    @Command(name = "versions", description = "List known NeoForge migration profiles.")
++    @Command(name = "versions", description = "List known migration profiles (Minecraft version + mod loader).")
+     static class Versions implements Callable<Integer> {
+         public Integer call() {
+             printLog(new MigrationLog.Event(java.time.Instant.now(), MigrationLog.Level.INFO,
+                     "Loading known profiles and bundled directed rule paths."));
+-            VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s NeoForge %-14s Java %s%n",
+-                    v.id(), v.minecraft(), v.neoForge() == null ? "override required" : v.neoForge(), v.javaMajor()));
++            VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s %-9s %-14s Java %s%n",
++                    v.id(), v.minecraft(), v.loaderLabel(), v.loaderVersionText(), v.javaMajor()));
+             System.out.println("Unknown versions can still be targeted with --to and --neoforge-version/--java.");
+             try {
+                 System.out.println("Bundled directed rule paths:");
+diff --git a/src/main/java/dev/mvswitcher/MVSwitcherInterface.java b/src/main/java/dev/mvswitcher/MVSwitcherInterface.java
+index 2a970bd..bb4afed 100644
+--- a/src/main/java/dev/mvswitcher/MVSwitcherInterface.java
++++ b/src/main/java/dev/mvswitcher/MVSwitcherInterface.java
+@@ -245,9 +245,11 @@ public final class MVSwitcherInterface {
+     private void applyProfileDefaults() {
+         Object selected = toField.getSelectedItem();
+         if (selected == null) return;
+-        VersionProfile profile = VersionCatalog.find(selected.toString().trim());
++        String version = selected.toString().trim();
++        VersionProfile profile = VersionCatalog.find(version);
+         if (profile != null) {
+-            neoField.setText(profile.neoForge());
++            VersionProfile neoProfile = VersionCatalog.find(version, "neoforge");
++            neoField.setText(neoProfile == null || neoProfile.neoForge() == null ? "" : neoProfile.neoForge());
+             javaField.setValue(profile.javaMajor());
+         } else {
+             neoField.setText("");
+@@ -267,7 +269,7 @@ public final class MVSwitcherInterface {
+         StringBuilder text = new StringBuilder("Профили целевых версий:\n");
+         for (VersionProfile profile : VersionCatalog.all()) {
+             text.append("  ").append(profile.id()).append(" | Minecraft ").append(profile.minecraft())
+-                    .append(" | NeoForge ").append(profile.neoForge())
++                    .append(" | ").append(profile.loaderLabel()).append(' ').append(profile.loaderVersionText())
+                     .append(" | Java ").append(profile.javaMajor()).append('\n');
+         }
+         text.append("\nВстроенные направленные маршруты:\n");
+diff --git a/src/main/java/dev/mvswitcher/MigrationEngine.java b/src/main/java/dev/mvswitcher/MigrationEngine.java
+index 081e93b..5478654 100644
+--- a/src/main/java/dev/mvswitcher/MigrationEngine.java
++++ b/src/main/java/dev/mvswitcher/MigrationEngine.java
+@@ -34,34 +34,50 @@ public final class MigrationEngine {
+     private static MigrationReport migrateInternal(MigrationOptions o, MigrationLog.Listener listener) throws IOException {
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: inspect source project.");
+         ProjectInfo sourceInfo = ProjectAnalyzer.analyze(o.input(), listener);
+-        if (!"NeoForge".equals(sourceInfo.loader())) {
+-            throw new IOException("Only NeoForge projects are supported.");
+-        }
++        if (!ProjectAnalyzer.LOADERS.contains(sourceInfo.loader())) {
++            throw new IOException("Could not detect a supported mod loader (" +
++                    String.join(", ", ProjectAnalyzer.LOADERS) + "). Multi-loader projects are not supported: " +
++                    "run the migration on one loader module at a time.");
++        }
++        String loaderName = sourceInfo.loader();
++        String loader = loaderName.toLowerCase(Locale.ROOT);
++        boolean neoForge = loader.equals("neoforge");
+         String from = o.from() == null || o.from().isBlank() ? sourceInfo.minecraftVersion() : o.from();
+         if (from == null) throw new IOException("Could not detect source Minecraft version. Supply --from.");
+         if (o.to() == null || o.to().isBlank()) throw new IOException("Target version is required (--to).");
+ 
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Migration direction: " + from + " -> " + o.to());
+-        VersionProfile target = VersionCatalog.find(o.to());
+-        String neo = o.neoForgeVersion() != null ? o.neoForgeVersion() : target == null ? null : target.neoForge();
+-        int java = o.javaVersion() != null ? o.javaVersion() : target == null ? 21 : target.javaMajor();
+-        if (neo == null) throw new IOException("Unknown target profile. Supply --neoforge-version explicitly.");
++        if (!neoForge && o.neoForgeVersion() != null) {
++            throw new IOException("--neoforge-version only applies to NeoForge projects, but this is a " +
++                    loaderName + " project.");
++        }
++        VersionProfile loaderProfile = VersionCatalog.find(o.to(), loader);
++        VersionProfile anyProfile = loaderProfile != null ? loaderProfile : VersionCatalog.find(o.to());
++        String neo = !neoForge ? null
++                : o.neoForgeVersion() != null ? o.neoForgeVersion()
++                : loaderProfile == null ? null : loaderProfile.neoForge();
++        int java = o.javaVersion() != null ? o.javaVersion() : anyProfile == null ? 21 : anyProfile.javaMajor();
++        if (neoForge && neo == null) throw new IOException("Unknown target profile. Supply --neoforge-version explicitly.");
++        String loaderVersionText = neoForge ? neo
++                : loaderProfile != null && loaderProfile.loaderVersion() != null ? loaderProfile.loaderVersion()
++                : "unchanged";
+         MigrationLog.log(listener, MigrationLog.Level.INFO,
+-                "Target configuration: Minecraft " + o.to() + ", NeoForge " + neo + ", Java " + java +
+-                        (target == null ? " (explicit target profile)." : " (known profile)."));
++                "Target configuration: Minecraft " + o.to() + ", " + loaderName + " " + loaderVersionText +
++                        ", Java " + java + (loaderProfile == null ? " (no known " + loaderName + " profile)." : " (known profile)."));
+ 
+         Path templateRoot = null;
+         if (o.template() != null) {
+-            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: inspect target NeoForge template.");
++            MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: inspect target " + loaderName + " template.");
+             ProjectInfo templateInfo = ProjectAnalyzer.analyze(o.template(), listener);
+-            if (!"NeoForge".equals(templateInfo.loader())) {
+-                throw new IOException("--template must be a NeoForge MDK project directory or ZIP.");
++            if (!loaderName.equals(templateInfo.loader())) {
++                throw new IOException("--template must be a " + loaderName + " MDK project directory or ZIP, " +
++                        "matching the source project's loader.");
+             }
+             if (templateInfo.minecraftVersion() != null && !o.to().equals(templateInfo.minecraftVersion())) {
+                 throw new IOException("Template Minecraft version " + templateInfo.minecraftVersion() +
+                         " does not match target " + o.to() + ".");
+             }
+-            if (templateInfo.neoForgeVersion() != null && !neo.equals(templateInfo.neoForgeVersion())) {
++            if (neoForge && templateInfo.neoForgeVersion() != null && !neo.equals(templateInfo.neoForgeVersion())) {
+                 throw new IOException("Template NeoForge version " + templateInfo.neoForgeVersion() +
+                         " does not match selected version " + neo + ".");
+             }
+@@ -72,13 +88,16 @@ public final class MigrationEngine {
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: load and validate directed migration rules.");
+         RulePack pack = loadRules(o.rules());
+         validateRules(pack);
+-        String loader = sourceInfo.loader().toLowerCase(Locale.ROOT);
+         List<MigrationRule> route = findRoute(pack.rules, from, o.to(), loader);
+         MigrationLog.log(listener, MigrationLog.Level.INFO,
+                 "Loaded " + pack.rules.size() + " rule(s); selected route contains " + route.size() + " edge(s).");
+ 
+         MigrationReport report = new MigrationReport();
+         report.versions(from, o.to());
++        if (!neoForge && loaderProfile == null) {
++            report.warning("No known " + loaderName + " profile for Minecraft " + o.to() + ": " + loaderName +
++                    " loader and API versions in gradle.properties were left unchanged. Update them manually.");
++        }
+         if (!from.equals(o.to()) && route.isEmpty()) {
+             report.warning("No migration rules are defined from " + from + " to " + o.to() +
+                     ". Build metadata can still be updated, but API compatibility is not covered.");
+@@ -102,18 +121,18 @@ public final class MigrationEngine {
+             throw new IOException("Output must be outside the source project directory.");
+         }
+         if (templateRoot != null && overlaps(out, templateRoot)) {
+-            throw new IOException("Output must be outside the NeoForge template directory.");
++            throw new IOException("Output must be outside the " + loaderName + " template directory.");
+         }
+         if (templateRoot != null && overlaps(sourceInfo.root(), templateRoot)) {
+-            throw new IOException("Source project and NeoForge template must be separate directories.");
++            throw new IOException("Source project and " + loaderName + " template must be separate directories.");
+         }
+ 
+         if (o.dryRun()) {
+             MigrationLog.log(listener, MigrationLog.Level.WARN, "Dry run selected; no project files will be written.");
+             report.warning("Dry run: no files were written.");
+-            report.warning("Target profile: Minecraft " + o.to() + ", NeoForge " + neo + ", Java " + java);
++            report.warning("Target profile: Minecraft " + o.to() + ", " + loaderName + " " + loaderVersionText + ", Java " + java);
+             if (templateRoot != null) {
+-                report.warning("Pipeline: copy prepared NeoForge template -> build template -> transfer mod files -> apply rules -> build migrated project.");
++                report.warning("Pipeline: copy prepared " + loaderName + " template -> build template -> transfer mod files -> apply rules -> build migrated project.");
+             } else {
+                 report.warning("Pipeline: copy source project -> apply rules -> update build metadata -> build migrated project.");
+             }
+@@ -139,18 +158,18 @@ public final class MigrationEngine {
+             ProjectFiles.copyProject(templateRoot, out);
+             MigrationLog.log(listener, MigrationLog.Level.SUCCESS, "Target template copied.");
+             MigrationLog.log(listener, MigrationLog.Level.INFO, "Updating template build metadata.");
+-            updateBuildFiles(out, o.to(), neo, java, report, listener);
++            updateBuildFiles(out, o.to(), neoForge, neo, java, loaderProfile, loaderName, report, listener);
+             if (o.skipBuild()) {
+                 report.templateBuild("SKIPPED", List.of());
+                 report.warning("Gradle builds skipped by --skip-build (both template and migrated-project builds).");
+                 MigrationLog.log(listener, MigrationLog.Level.WARN, "Template build skipped by --skip-build.");
+             } else {
+-                MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: build clean target NeoForge template.");
++                MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: build clean target " + loaderName + " template.");
+                 BuildRunner.Result templateBuild = BuildRunner.run(out, listener);
+                 report.templateBuild(templateBuild.success() ? "SUCCESS" : templateBuild.started() ? "FAILED" : "NOT RUN",
+                         templateBuild.output());
+                 if (!templateBuild.success()) {
+-                    report.error("Target NeoForge template build failed before source files were transferred.");
++                    report.error("Target " + loaderName + " template build failed before source files were transferred.");
+                     MigrationLog.log(listener, MigrationLog.Level.ERROR,
+                             "Template build failed; source files were not overlaid.");
+                     return report;
+@@ -165,7 +184,7 @@ public final class MigrationEngine {
+ 
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Stage: apply migration rules and update build metadata.");
+         applyRules(out, from, o.to(), loader, pack, route, report, listener);
+-        updateBuildFiles(out, o.to(), neo, java, report, listener);
++        updateBuildFiles(out, o.to(), neoForge, neo, java, loaderProfile, loaderName, report, listener);
+         MigrationLog.log(listener, MigrationLog.Level.INFO, "Checking Java source syntax.");
+         validateJava(out, report, listener);
+         if (o.skipBuild()) {
+@@ -334,7 +353,7 @@ public final class MigrationEngine {
+             if (rule.type != null && !rule.type.equals("text") && !rule.type.equals("warn")) {
+                 throw new IOException("Rule " + rule.id + " has unknown 'type' " + rule.type + " (expected 'text' or 'warn').");
+             }
+-            if (rule.loader != null && !rule.loader.matches("[A-Za-z0-9_-]+")) {
++            if (rule.loader != null && !rule.loader.matches("\\*|[A-Za-z0-9_-]+")) {
+                 throw new IOException("Rule " + rule.id + " has an invalid 'loader': " + rule.loader);
+             }
+             boolean hasLiteralFind = rule.find != null && !rule.find.isEmpty();
+@@ -389,7 +408,7 @@ public final class MigrationEngine {
+             MigrationLog.log(listener, MigrationLog.Level.INFO, "Applying rule edge " + edge.from + " -> " + edge.to);
+             for (MigrationRule rule : pack.rules) {
+                 if (!Objects.equals(rule.from, edge.from) || !Objects.equals(rule.to, edge.to)) continue;
+-                if (!rule.loaderOrDefault().equals(loader)) continue;
++                if (!rule.appliesTo(loader)) continue;
+                 MigrationLog.log(listener, MigrationLog.Level.DEBUG, "Checking rule " + rule.id +
+                         " against " + rule.includes);
+                 int replacements = 0;
+@@ -462,7 +481,7 @@ public final class MigrationEngine {
+     /** Shortest route between two versions; when {@code loader} is set, only that loader's rules are used. */
+     static List<MigrationRule> findRoute(List<MigrationRule> allRules, String from, String to, String loader) {
+         List<MigrationRule> rules = loader == null ? allRules
+-                : allRules.stream().filter(r -> r.loaderOrDefault().equals(loader)).toList();
++                : allRules.stream().filter(r -> r.appliesTo(loader)).toList();
+         if (Objects.equals(from, to)) return List.of();
+         record Step(String version, List<MigrationRule> path) {}
+         Queue<Step> queue = new ArrayDeque<>();
+@@ -552,18 +571,37 @@ public final class MigrationEngine {
+ 
+     private record Replacement(String text, int count) {}
+ 
+-    private static void updateBuildFiles(Path root, String mc, String neo, int java, MigrationReport report,
++    static void updateBuildFiles(Path root, String mc, boolean neoForge, String neo, int java,
++                                         VersionProfile profile, String loaderName, MigrationReport report,
+                                          MigrationLog.Listener listener) throws IOException {
+         Path props = root.resolve("gradle.properties");
+         if (Files.isRegularFile(props)) {
+             String s = Files.readString(props);
+-            s = setProperty(s, "minecraft_version", mc);
+-            s = setProperty(s, "neo_version", neo);
+-            s = setProperty(s, "java_version", Integer.toString(java));
++            Map<String, String> wanted = new LinkedHashMap<>();
++            wanted.put("minecraft_version", mc);
++            if (neoForge) wanted.put("neo_version", neo);
++            wanted.put("java_version", Integer.toString(java));
++            if (profile != null) wanted.putAll(profile.properties());
++            List<String> missing = new ArrayList<>();
++            for (Map.Entry<String, String> entry : wanted.entrySet()) {
++                if (neoForge || hasProperty(s, entry.getKey())) {
++                    s = setProperty(s, entry.getKey(), entry.getValue());
++                } else if (!entry.getKey().equals("java_version")) {
++                    // Non-NeoForge projects rarely keep the Java version in gradle.properties: not worth a warning.
++                    missing.add(entry.getKey());
++                }
++            }
+             Files.writeString(props, s);
+             report.changed("gradle.properties (target versions)");
+             MigrationLog.log(listener, MigrationLog.Level.SUCCESS,
+-                    "Updated gradle.properties: Minecraft " + mc + ", NeoForge " + neo + ", Java " + java + ".");
++                    "Updated gradle.properties: Minecraft " + mc + (neoForge ? ", NeoForge " + neo : "") +
++                            ", Java " + java + ".");
++            if (!missing.isEmpty()) {
++                String warning = "gradle.properties of this " + loaderName + " project has no " + missing +
++                        " entr" + (missing.size() == 1 ? "y" : "ies") + "; not added. Check the build files by hand.";
++                report.warning(warning);
++                MigrationLog.log(listener, MigrationLog.Level.WARN, warning);
++            }
+         } else {
+             report.warning("gradle.properties not found; target versions were not written there.");
+             MigrationLog.log(listener, MigrationLog.Level.WARN, "gradle.properties not found.");
+@@ -571,6 +609,10 @@ public final class MigrationEngine {
+         updateMinecraftVersionRanges(root, mc, report, listener);
+     }
+ 
++    private static boolean hasProperty(String source, String key) {
++        return Pattern.compile("(?m)^\\s*" + Pattern.quote(key) + "\\s*=").matcher(source).find();
++    }
++
+     /**
+      * Keep NeoForge's Minecraft compatibility range in sync with the selected
+      * target version. MDKs may place this property in settings.gradle,
+@@ -641,7 +683,7 @@ public final class MigrationEngine {
+     public static class RuleIndex { public List<String> files = new ArrayList<>(); }
+     public static class MigrationRule {
+         public String id, from, to, find, findRegex, replace, skipIfContains;
+-        /** Loader this rule applies to; defaults to {@code neoforge} when omitted. */
++        /** Loader this rule applies to; defaults to {@code neoforge} when omitted, {@code "*"} means every loader. */
+         public String loader;
+         /** {@code text} (default) rewrites files; {@code warn} only reports matches using {@link #message}. */
+         public String type;
+@@ -655,6 +697,12 @@ public final class MigrationEngine {
+             return loader == null || loader.isBlank() ? "neoforge" : loader.toLowerCase(Locale.ROOT);
+         }
+ 
++        /** True when this rule belongs to the given lower-case loader; {@code "*"} means every loader. */
++        boolean appliesTo(String loader) {
++            String own = loaderOrDefault();
++            return own.equals("*") || own.equals(loader);
++        }
++
+         boolean warnOnly() { return "warn".equals(type); }
+     }
+ }
+diff --git a/src/main/java/dev/mvswitcher/ProjectAnalyzer.java b/src/main/java/dev/mvswitcher/ProjectAnalyzer.java
+index f52a5bf..86caf74 100644
+--- a/src/main/java/dev/mvswitcher/ProjectAnalyzer.java
++++ b/src/main/java/dev/mvswitcher/ProjectAnalyzer.java
+@@ -24,8 +24,7 @@ public final class ProjectAnalyzer {
+         if (mc == null) mc = first(gradle, "(?i)minecraft\\s*[:=]\\s*['\\\"]([0-9][^'\\\"]*)");
+         String neo = first(gradle, "(?m)^\\s*neo_version\\s*=\\s*['\\\"]?([^'\\\"\\s]+)");
+         if (neo == null) neo = first(gradle, "(?i)neoforge\\s*[:=]\\s*['\\\"]([0-9][^'\\\"]*)");
+-        String loader = Files.exists(root.resolve("src/main/resources/META-INF/neoforge.mods.toml")) ||
+-                gradle.toLowerCase(Locale.ROOT).contains("neoforge") ? "NeoForge" : "unknown";
++        String loader = detectLoader(root, gradle, listener);
+         int java = 0;
+         String j = first(gradle, "(?i)(?:JavaLanguageVersion\\.of\\(|java_version\\s*=\\s*)['\\\"]?(\\d+)");
+         if (j != null) try { java = Integer.parseInt(j); } catch (NumberFormatException ignored) {}
+@@ -41,6 +40,48 @@ public final class ProjectAnalyzer {
+                 ", source roots=" + sources.size() + ", resource roots=" + resources.size());
+         return result;
+     }
++    /** Display names of the loaders this tool recognises; {@code unknown} is returned otherwise. */
++    public static final List<String> LOADERS = List.of("NeoForge", "Forge", "Fabric", "Quilt");
++
++    /**
++     * Detects the mod loader. Metadata files are the most reliable signal, Gradle markers are the fallback.
++     * A project that shows markers of several unrelated loaders (a multi-loader repository) is reported as
++     * {@code unknown} instead of guessing; Quilt together with Fabric counts as Quilt, because Quilt projects
++     * often keep Fabric metadata for compatibility.
++     */
++    static String detectLoader(Path root, String gradle, MigrationLog.Listener listener) {
++        Set<String> byFiles = loadersIn(
++                Files.exists(root.resolve("src/main/resources/META-INF/neoforge.mods.toml")),
++                Files.exists(root.resolve("src/main/resources/META-INF/mods.toml")),
++                Files.exists(root.resolve("src/main/resources/fabric.mod.json")),
++                Files.exists(root.resolve("src/main/resources/quilt.mod.json")));
++        String text = gradle.toLowerCase(Locale.ROOT);
++        Set<String> byGradle = loadersIn(
++                text.contains("neoforge") || text.contains("net.neoforged"),
++                text.contains("net.minecraftforge") || text.contains("forgegradle"),
++                text.contains("fabric-loom") || text.contains("net.fabricmc"),
++                text.contains("org.quiltmc") || text.contains("quilt_loader") || text.contains("quilt-loader"));
++        Set<String> found = byFiles.isEmpty() ? byGradle : byFiles;
++        // NeoForge 1.20.1-1.20.4 still ships META-INF/mods.toml, exactly like Forge: Gradle breaks the tie.
++        if (found.equals(Set.of("Forge")) && byGradle.equals(Set.of("NeoForge"))) found = byGradle;
++        if (found.size() == 2 && found.contains("Quilt") && found.contains("Fabric")) return "Quilt";
++        if (found.size() == 1) return found.iterator().next();
++        if (found.size() > 1) {
++            MigrationLog.log(listener, MigrationLog.Level.WARN,
++                    "Several mod loaders were detected " + found + "; this looks like a multi-loader project.");
++        }
++        return "unknown";
++    }
++
++    private static Set<String> loadersIn(boolean neoforge, boolean forge, boolean fabric, boolean quilt) {
++        Set<String> result = new LinkedHashSet<>();
++        if (neoforge) result.add("NeoForge");
++        if (forge) result.add("Forge");
++        if (fabric) result.add("Fabric");
++        if (quilt) result.add("Quilt");
++        return result;
++    }
++
+     private static String read(Path p) throws IOException { return Files.isRegularFile(p) ? Files.readString(p) : ""; }
+     private static String first(String text, String regex) {
+         Matcher m = Pattern.compile(regex).matcher(text);
+diff --git a/src/main/java/dev/mvswitcher/VersionCatalog.java b/src/main/java/dev/mvswitcher/VersionCatalog.java
+index 7977835..80f088a 100644
+--- a/src/main/java/dev/mvswitcher/VersionCatalog.java
++++ b/src/main/java/dev/mvswitcher/VersionCatalog.java
+@@ -52,7 +52,18 @@ public final class VersionCatalog {
+             if (!keys.add(loader + ":" + id)) {
+                 throw new IOException("Duplicate profile " + id + " for loader " + loader + ": " + label);
+             }
+-            result.add(new VersionProfile(id, minecraft, loader, loaderVersion, node.get("java").asInt()));
++            Map<String, String> properties = new LinkedHashMap<>();
++            JsonNode extra = node.path("properties");
++            if (!extra.isMissingNode() && !extra.isNull()) {
++                if (!extra.isObject()) throw new IOException("Profile " + id + ": 'properties' must be an object: " + label);
++                for (var field : extra.properties()) {
++                    if (!field.getKey().matches("[A-Za-z0-9_.-]+") || !field.getValue().isTextual()) {
++                        throw new IOException("Profile " + id + ": every property needs a simple name and a string value: " + label);
++                    }
++                    properties.put(field.getKey(), field.getValue().asText());
++                }
++            }
++            result.add(new VersionProfile(id, minecraft, loader, loaderVersion, node.get("java").asInt(), properties));
+         }
+         return List.copyOf(result);
+     }
+diff --git a/src/main/java/dev/mvswitcher/VersionProfile.java b/src/main/java/dev/mvswitcher/VersionProfile.java
+index 304f332..19f1715 100644
+--- a/src/main/java/dev/mvswitcher/VersionProfile.java
++++ b/src/main/java/dev/mvswitcher/VersionProfile.java
+@@ -1,5 +1,8 @@
+ package dev.mvswitcher;
+ 
++import java.util.LinkedHashMap;
++import java.util.Map;
++
+ /**
+  * A known Minecraft + mod loader combination.
+  *
+@@ -8,8 +11,29 @@ package dev.mvswitcher;
+  * @param loader        lower-case loader name, for example {@code neoforge}, {@code forge}, {@code fabric}, {@code quilt}
+  * @param loaderVersion loader version for this Minecraft version, or null if it must be supplied explicitly
+  * @param javaMajor     Java major version required to build for this profile
++ * @param properties    extra {@code gradle.properties} entries to write when migrating to this profile, for example
++ *                      {@code loader_version} or {@code fabric_version}; never null
+  */
+-public record VersionProfile(String id, String minecraft, String loader, String loaderVersion, int javaMajor) {
++public record VersionProfile(String id, String minecraft, String loader, String loaderVersion, int javaMajor,
++                             Map<String, String> properties) {
++    public VersionProfile {
++        properties = properties == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(properties));
++    }
++
++    public VersionProfile(String id, String minecraft, String loader, String loaderVersion, int javaMajor) {
++        this(id, minecraft, loader, loaderVersion, javaMajor, Map.of());
++    }
++
++    /** Loader name as shown to people, for example {@code NeoForge}; falls back to the stored name. */
++    public String loaderLabel() {
++        return ProjectAnalyzer.LOADERS.stream().filter(name -> name.equalsIgnoreCase(loader)).findFirst().orElse(loader);
++    }
++
++    /** Loader version for display: the version itself, or a note that it has to be supplied. */
++    public String loaderVersionText() {
++        return loaderVersion == null ? "override required" : loaderVersion;
++    }
++
+     /** NeoForge version of this profile, or null when the profile belongs to another loader. */
+     public String neoForge() {
+         return "neoforge".equals(loader) ? loaderVersion : null;
+diff --git a/src/test/java/dev/mvswitcher/LoaderSupportTest.java b/src/test/java/dev/mvswitcher/LoaderSupportTest.java
+new file mode 100644
+index 0000000..cc38d61
+--- /dev/null
++++ b/src/test/java/dev/mvswitcher/LoaderSupportTest.java
+@@ -0,0 +1,179 @@
++package dev.mvswitcher;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++import java.io.ByteArrayInputStream;
++import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.*;
++import java.util.List;
++import java.util.Map;
++import static org.junit.jupiter.api.Assertions.*;
++
++class LoaderSupportTest {
++    @TempDir Path temp;
++
++    /** Creates a project directory with the given gradle text and resource files (relative to src/main/resources). */
++    private Path project(String name, String gradleProperties, String buildGradle, String... resourceFiles) throws IOException {
++        Path root = temp.resolve(name);
++        Files.createDirectories(root.resolve("src/main/java/example"));
++        Files.createDirectories(root.resolve("src/main/resources/META-INF"));
++        Files.writeString(root.resolve("gradle.properties"), gradleProperties);
++        Files.writeString(root.resolve("build.gradle"), buildGradle);
++        for (String file : resourceFiles) {
++            Path path = root.resolve("src/main/resources").resolve(file);
++            Files.createDirectories(path.getParent());
++            Files.writeString(path, "x");
++        }
++        return root;
++    }
++
++    private String loaderOf(Path project) throws IOException {
++        return ProjectAnalyzer.analyze(project).loader();
++    }
++
++    @Test void detectsEveryLoaderFromItsMetadata() throws Exception {
++        assertEquals("NeoForge", loaderOf(project("neo", "minecraft_version=1.21.11\n", "", "META-INF/neoforge.mods.toml")));
++        assertEquals("Forge", loaderOf(project("forge", "minecraft_version=1.20.1\n",
++                "plugins { id 'net.minecraftforge.gradle' }", "META-INF/mods.toml")));
++        assertEquals("Fabric", loaderOf(project("fabric", "minecraft_version=1.21.1\n", "", "fabric.mod.json")));
++        assertEquals("Quilt", loaderOf(project("quilt", "minecraft_version=1.21.1\n", "", "quilt.mod.json")));
++    }
++
++    @Test void quiltWithFabricCompatibilityMetadataStaysQuilt() throws Exception {
++        assertEquals("Quilt", loaderOf(project("quilt-compat", "minecraft_version=1.21.1\n", "",
++                "quilt.mod.json", "fabric.mod.json")));
++    }
++
++    @Test void legacyNeoForgeWithModsTomlIsNotMistakenForForge() throws Exception {
++        assertEquals("NeoForge", loaderOf(project("neo-legacy", "minecraft_version=1.20.1\nneo_version=47.1.106\n",
++                "plugins { id 'net.neoforged.gradle.userdev' }", "META-INF/mods.toml")));
++    }
++
++    @Test void detectsLoaderFromGradleWhenThereIsNoMetadata() throws Exception {
++        assertEquals("Fabric", loaderOf(project("fabric-gradle", "minecraft_version=1.21.1\n",
++                "plugins { id 'fabric-loom' version '1.7' }")));
++        assertEquals("Quilt", loaderOf(project("quilt-gradle", "minecraft_version=1.21.1\n",
++                "plugins { id 'org.quiltmc.loom' version '1.7' }")));
++    }
++
++    @Test void multiLoaderProjectIsUnknownInsteadOfGuessed() throws Exception {
++        assertEquals("unknown", loaderOf(project("multi", "minecraft_version=1.21.1\n", "",
++                "META-INF/neoforge.mods.toml", "fabric.mod.json")));
++        assertEquals("unknown", loaderOf(project("plain", "minecraft_version=1.21.1\n", "")));
++    }
++
++    private MigrationOptions options(Path source, Path output, Path rules, String neoVersion, Path template) {
++        return new MigrationOptions(source, "1.21.11", "26.3", neoVersion, null, output, rules, template,
++                false, false, true);
++    }
++
++    private Path rules() throws IOException {
++        Path file = temp.resolve("loader-rules.json");
++        Files.writeString(file, """
++                {"rules": [
++                  {"id":"fabric-only","from":"1.21.11","to":"26.3","loader":"fabric",
++                   "includes":["**/*.java"],"find":"FabricOld","replace":"FabricNew"},
++                  {"id":"neoforge-default","from":"1.21.11","to":"26.3",
++                   "includes":["**/*.java"],"find":"NeoOld","replace":"NeoNew"},
++                  {"id":"any-loader","from":"1.21.11","to":"26.3","loader":"*",
++                   "includes":["**/*.java"],"find":"VanillaOld","replace":"VanillaNew"}
++                ]}
++                """);
++        return file;
++    }
++
++    @Test void fabricProjectMigratesWithItsOwnAndWildcardRulesOnly() throws Exception {
++        Path source = project("FabricMod",
++                "minecraft_version=1.21.11\nloader_version=0.16.0\nfabric_version=0.100.0\n", "", "fabric.mod.json");
++        Files.writeString(source.resolve("src/main/java/example/Mod.java"),
++                "class Mod { FabricOld a; NeoOld b; VanillaOld c; }");
++        Path output = temp.resolve("fabric-out");
++
++        var report = MigrationEngine.migrate(options(source, output, rules(), null, null));
++
++        assertFalse(report.hasErrors());
++        assertEquals("class Mod { FabricNew a; NeoOld b; VanillaNew c; }",
++                Files.readString(output.resolve("src/main/java/example/Mod.java")));
++        String properties = Files.readString(output.resolve("gradle.properties"));
++        assertTrue(properties.contains("minecraft_version=26.3"));
++        assertTrue(properties.contains("loader_version=0.16.0"), "unknown loader versions must stay untouched");
++        assertTrue(properties.contains("fabric_version=0.100.0"));
++        assertFalse(properties.contains("neo_version"), "a Fabric project must not receive neo_version");
++        assertFalse(properties.contains("java_version"), "java_version must not be invented for Fabric projects");
++        assertTrue(report.toText().contains("No known Fabric profile for Minecraft 26.3"));
++    }
++
++    @Test void neoForgeRulesStillApplyByDefaultToNeoForgeProjects() throws Exception {
++        Path source = project("NeoMod", "minecraft_version=1.21.11\nneo_version=21.11.48\n", "",
++                "META-INF/neoforge.mods.toml");
++        Files.writeString(source.resolve("src/main/java/example/Mod.java"),
++                "class Mod { FabricOld a; NeoOld b; VanillaOld c; }");
++        Path output = temp.resolve("neo-out");
++
++        var report = MigrationEngine.migrate(options(source, output, rules(), null, null));
++
++        assertFalse(report.hasErrors());
++        assertEquals("class Mod { FabricOld a; NeoNew b; VanillaNew c; }",
++                Files.readString(output.resolve("src/main/java/example/Mod.java")));
++        assertTrue(Files.readString(output.resolve("gradle.properties")).contains("neo_version=26.3.0.99"));
++    }
++
++    @Test void unsupportedOrAmbiguousProjectsAreRejectedWithAnExplanation() throws Exception {
++        Path multi = project("Multi", "minecraft_version=1.21.11\n", "", "META-INF/neoforge.mods.toml", "fabric.mod.json");
++        IOException error = assertThrows(IOException.class, () ->
++                MigrationEngine.migrate(options(multi, temp.resolve("multi-out"), rules(), null, null)));
++        assertTrue(error.getMessage().contains("Multi-loader projects are not supported"));
++    }
++
++    @Test void neoForgeVersionOptionIsRejectedForOtherLoaders() throws Exception {
++        Path source = project("FabricMod2", "minecraft_version=1.21.11\n", "", "fabric.mod.json");
++        IOException error = assertThrows(IOException.class, () ->
++                MigrationEngine.migrate(options(source, temp.resolve("o"), rules(), "21.11.48", null)));
++        assertTrue(error.getMessage().contains("--neoforge-version only applies to NeoForge projects"));
++    }
++
++    @Test void templateMustUseTheSameLoaderAsTheSource() throws Exception {
++        Path source = project("FabricMod3", "minecraft_version=1.21.11\n", "", "fabric.mod.json");
++        Path template = project("NeoTemplate", "minecraft_version=26.3\nneo_version=26.3.0.99\n", "",
++                "META-INF/neoforge.mods.toml");
++        IOException error = assertThrows(IOException.class, () ->
++                MigrationEngine.migrate(options(source, temp.resolve("o2"), rules(), null, template)));
++        assertTrue(error.getMessage().contains("--template must be a Fabric MDK"));
++    }
++
++    @Test void profilePropertiesAreWrittenForExistingKeysAndReportedWhenMissing() throws Exception {
++        Path root = project("Props", "minecraft_version=1.21.11\nloader_version=0.16.0\n", "", "fabric.mod.json");
++        var profile = new VersionProfile("26.3", "26.3", "fabric", "0.19.0", 25,
++                Map.of("loader_version", "0.19.0", "yarn_mappings", "26.3+build.1"));
++        var report = new MigrationReport();
++
++        MigrationEngine.updateBuildFiles(root, "26.3", false, null, 25, profile, "Fabric", report,
++                MigrationLog.Listener.NONE);
++
++        String properties = Files.readString(root.resolve("gradle.properties"));
++        assertTrue(properties.contains("minecraft_version=26.3"));
++        assertTrue(properties.contains("loader_version=0.19.0"));
++        assertFalse(properties.contains("yarn_mappings"));
++        assertTrue(report.toText().contains("[yarn_mappings]"));
++    }
++
++    @Test void catalogReadsAndValidatesProfileProperties() throws Exception {
++        String ok = "{\"profiles\":[{\"minecraft\":\"26.3\",\"loader\":\"Fabric\",\"java\":25,"
++                + "\"properties\":{\"loader_version\":\"0.19.0\"}}]}";
++        VersionProfile profile = VersionCatalog.parse(
++                new ByteArrayInputStream(ok.getBytes(StandardCharsets.UTF_8)), "test").get(0);
++        assertEquals("fabric", profile.loader());
++        assertEquals("Fabric", profile.loaderLabel());
++        assertEquals(Map.of("loader_version", "0.19.0"), profile.properties());
++        assertEquals("override required", profile.loaderVersionText());
++
++        for (String bad : List.of(
++                "{\"profiles\":[{\"minecraft\":\"26.3\",\"loader\":\"fabric\",\"java\":25,\"properties\":[]}]}",
++                "{\"profiles\":[{\"minecraft\":\"26.3\",\"loader\":\"fabric\",\"java\":25,\"properties\":{\"a b\":\"x\"}}]}",
++                "{\"profiles\":[{\"minecraft\":\"26.3\",\"loader\":\"fabric\",\"java\":25,\"properties\":{\"a\":1}}]}")) {
++            assertThrows(IOException.class, () -> VersionCatalog.parse(
++                    new ByteArrayInputStream(bad.getBytes(StandardCharsets.UTF_8)), "test"));
++        }
++    }
++}
+-- 
+2.43.0
+
