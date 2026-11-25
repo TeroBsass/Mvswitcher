@@ -70,13 +70,13 @@ public class MVSwitcher implements Runnable {
         }
     }
 
-    @Command(name = "versions", description = "List known NeoForge migration profiles.")
+    @Command(name = "versions", description = "List known migration profiles (Minecraft version + mod loader).")
     static class Versions implements Callable<Integer> {
         public Integer call() {
             printLog(new MigrationLog.Event(java.time.Instant.now(), MigrationLog.Level.INFO,
                     "Loading known profiles and bundled directed rule paths."));
-            VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s NeoForge %-14s Java %s%n",
-                    v.id(), v.minecraft(), v.neoForge() == null ? "override required" : v.neoForge(), v.javaMajor()));
+            VersionCatalog.all().forEach(v -> System.out.printf("%-10s Minecraft %-10s %-9s %-14s Java %s%n",
+                    v.id(), v.minecraft(), v.loaderLabel(), v.loaderVersionText(), v.javaMajor()));
             System.out.println("Unknown versions can still be targeted with --to and --neoforge-version/--java.");
             try {
                 System.out.println("Bundled directed rule paths:");

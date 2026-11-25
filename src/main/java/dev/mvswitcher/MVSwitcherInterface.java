@@ -245,9 +245,11 @@ public final class MVSwitcherInterface {
     private void applyProfileDefaults() {
         Object selected = toField.getSelectedItem();
         if (selected == null) return;
-        VersionProfile profile = VersionCatalog.find(selected.toString().trim());
+        String version = selected.toString().trim();
+        VersionProfile profile = VersionCatalog.find(version);
         if (profile != null) {
-            neoField.setText(profile.neoForge());
+            VersionProfile neoProfile = VersionCatalog.find(version, "neoforge");
+            neoField.setText(neoProfile == null || neoProfile.neoForge() == null ? "" : neoProfile.neoForge());
             javaField.setValue(profile.javaMajor());
         } else {
             neoField.setText("");
@@ -267,7 +269,7 @@ public final class MVSwitcherInterface {
         StringBuilder text = new StringBuilder("Профили целевых версий:\n");
         for (VersionProfile profile : VersionCatalog.all()) {
             text.append("  ").append(profile.id()).append(" | Minecraft ").append(profile.minecraft())
-                    .append(" | NeoForge ").append(profile.neoForge())
+                    .append(" | ").append(profile.loaderLabel()).append(' ').append(profile.loaderVersionText())
                     .append(" | Java ").append(profile.javaMajor()).append('\n');
         }
         text.append("\nВстроенные направленные маршруты:\n");

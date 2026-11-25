@@ -1,0 +1,6 @@
+{
+  "profiles": [
+    { "id": "1.21.11", "minecraft": "1.21.11", "loader": "neoforge", "loaderVersion": "21.11.48", "java": 21 },
+    { "id": "26.3",    "minecraft": "26.3",    "loader": "neoforge", "loaderVersion": "26.3.0.99", "java": 25 }
+  ]
+}

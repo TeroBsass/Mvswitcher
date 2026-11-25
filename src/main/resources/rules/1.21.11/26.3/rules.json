@@ -58,7 +58,7 @@
       "from": "1.21.11",
       "to": "26.3",
       "includes": ["**/PlayerDetectorRailBlock.java"],
-      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec\\(PlayerDetectorRailBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseRailBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
+      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<PlayerDetectorRailBlock> CODEC = simpleCodec\\(PlayerDetectorRailBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseRailBlock> codec\\(\\) \\{ return CODEC; \\}",
       "replace": "",
       "maxReplacements": 1
     },
@@ -67,7 +67,7 @@
       "from": "1.21.11",
       "to": "26.3",
       "includes": ["**/RailCreatorBlock.java"],
-      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<RailCreatorBlock> CODEC = simpleCodec\\(RailCreatorBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseEntityBlock> codec\\(\\) \\{ return CODEC; \\}\\s*",
+      "findRegex": "\\s*private static final com\\.mojang\\.serialization\\.MapCodec<RailCreatorBlock> CODEC = simpleCodec\\(RailCreatorBlock::new\\);\\s*@Override protected com\\.mojang\\.serialization\\.MapCodec<\\? extends BaseEntityBlock> codec\\(\\) \\{ return CODEC; \\}",
       "replace": "",
       "maxReplacements": 1
     },
